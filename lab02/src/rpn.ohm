@@ -1,3 +1,7 @@
 ReversePolishNotation {
-    // write rules here
+  RpnExp = RpnExp RpnExp "+"    -- add
+    | RpnExp RpnExp "*"         -- mul
+    | number
+
+  number = digit+     
 }
