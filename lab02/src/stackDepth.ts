@@ -6,13 +6,9 @@ export const rpnStackDepth = {
         const leftDepth = left.stackDepth;
         const rightDepth = right.stackDepth;
 
-        const maxDuringLeft = leftDepth.max;
-        const maxDuringRight = leftDepth.out + rightDepth.max;
-
-        const finalStackSize = leftDepth.out + rightDepth.out - 2 + 1;
         return {
-            max: Math.max(maxDuringLeft, maxDuringRight),
-            out: finalStackSize
+            max: leftDepth.out + rightDepth.max,
+            out: leftDepth.out + rightDepth.out - 2 + 1
         };
     },
 
@@ -20,14 +16,9 @@ export const rpnStackDepth = {
         const leftDepth = left.stackDepth;
         const rightDepth = right.stackDepth;
 
-        const maxDuringLeft = leftDepth.max;
-        const maxDuringRight = leftDepth.out + rightDepth.max;
-
-
-        const finalStackSize = leftDepth.out + rightDepth.out - 2 + 1;
         return {
-            max: Math.max(maxDuringLeft, maxDuringRight),
-            out: finalStackSize
+            max: leftDepth.out + rightDepth.max,
+            out: leftDepth.out + rightDepth.out - 2 + 1
         };
     },
 
