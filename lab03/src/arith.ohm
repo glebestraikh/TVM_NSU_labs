@@ -1,3 +1,16 @@
 Arithmetic {
-    // write rules here
+    Sum = NonemptyListOf<Sub, "+">  // один или больше элементов A, разделённых символом +
+    Sub = NonemptyListOf<Mul, "-">
+    Mul = NonemptyListOf<Div, "*">
+    Div = NonemptyListOf<UnaryMin, "/">
+    
+    UnaryMin = ("-")* Atom 
+    
+    Atom = 
+      | "(" Sum ")" -- parenthesis 
+      | number
+    
+    number = 
+        | digit+ -- number 
+        | letter+ -- variable
 }
