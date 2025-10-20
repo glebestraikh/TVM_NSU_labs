@@ -4,19 +4,16 @@ export type Expr =
     | BinaryOp
     | UnaryMinus;
 
-// Числовая константа
 export interface NumConst {
     type: 'const';
     value: number;
 }
 
-// Переменная
 export interface Variable {
     type: 'var';
     name: string;
 }
 
-// Бинарные операции: +, -, *, /
 export interface BinaryOp {
     type: 'binop';
     op: '+' | '-' | '*' | '/';
@@ -24,7 +21,6 @@ export interface BinaryOp {
     right: Expr;
 }
 
-// Унарный минус
 export interface UnaryMinus {
     type: 'unary';
     op: '-';

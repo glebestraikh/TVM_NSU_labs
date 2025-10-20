@@ -1,16 +1,10 @@
 import { Expr, BinaryOp } from "./ast";
 
-// Приоритеты операций (чем больше, тем выше приоритет)
 const precedence: { [op: string]: number } = {
     '+': 1,
     '-': 1,
     '*': 2,
     '/': 2
-};
-
-// Левая ассоциативность для всех операций
-const isLeftAssociative = (op: string): boolean => {
-    return true; // все наши операции левоассоциативны
 };
 
 export function printExpr(e: Expr, parentOp?: string, isRightChild: boolean = false): string {
@@ -23,24 +17,18 @@ export function printExpr(e: Expr, parentOp?: string, isRightChild: boolean = fa
 
         case 'unary': {
             const arg = printExpr(e.argument, e.op, false);
-            // Унарный минус имеет высокий приоритет, скобки нужны только для другого унарного минуса
-            // или если аргумент сам является выражением с низким приоритетом
-            if (e.argument.type === 'binop') {
-                return `-${arg}`;
-            }
             return `-${arg}`;
         }
 
         case 'binop': {
-            const currentPrec = precedence[e.op];
             const needsParens = parentOp !== undefined && (
-                // Если приоритет текущей операции ниже родительской
-                precedence[parentOp] > currentPrec ||
-                // Или если приоритеты равны, но мы правый потомок и:
-                (precedence[parentOp] === currentPrec && isRightChild && (
-                    // операции разные ИЛИ
+                // Если приоритет текущей операции ниже родительской, пример (a * (b + c))
+                precedence[parentOp] > precedence[e.op] ||
+                // Или если приоритеты равны, но мы правый потомок:
+                (precedence[parentOp] === precedence[e.op] && isRightChild && (
+                    // операции разные, пример (a - (b + c))
                     parentOp !== e.op ||
-                    // операция некоммутативная (- или /)
+                    // операция левоассоциативны (- или /), пример (a - (b - c))
                     parentOp === '-' || parentOp === '/'
                 ))
             );
