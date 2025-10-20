@@ -1,5 +1,7 @@
 import { BufferedEmitter, c, I32, I64, N, Op, Void } from "../../wasm";
 
+// Определяет тип JS-функции, которая может принимать любое количество аргументов (...args) 
+// и возвращает значение типа R.
 export type Fn<R> = (...args: any[]) => R;
 
 export async function buildOneFunctionModule<R = number>(name: string, argCount: number, body: N[]): Promise<Fn<R>> {
