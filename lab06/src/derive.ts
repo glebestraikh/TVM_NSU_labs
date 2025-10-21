@@ -1,4 +1,4 @@
-import { Expr, NumConst, Variable, BinaryOp, UnaryMinus } from "../../lab04";
+import { Expr } from "../../lab04";
 
 export function derive(e: Expr, varName: string): Expr {
     switch (e.type) {
@@ -7,18 +7,18 @@ export function derive(e: Expr, varName: string): Expr {
             return makeConst(0);
 
         case 'var':
-            const varExpr = e as Variable;
+            const varExpr = e;
             // d/dx(x) = 1, d/dx(y) = 0
             return makeConst(varExpr.name === varName ? 1 : 0);
 
         case 'unary':
-            const unaryExpr = e as UnaryMinus;
+            const unaryExpr = e;
             // d/dx(-f) = -(d/dx(f))
             const derivedArg = derive(unaryExpr.argument, varName);
             return simplifyUnary(derivedArg);
 
         case 'binop':
-            const binopExpr = e as BinaryOp;
+            const binopExpr = e;
             const left = binopExpr.left;
             const right = binopExpr.right;
 
@@ -61,30 +61,30 @@ export function derive(e: Expr, varName: string): Expr {
 }
 
 function isZero(e: Expr): boolean {
-    return e.type === 'const' && (e as NumConst).value === 0;
+    return e.type === 'const' && (e).value === 0;
 }
 
 function isOne(e: Expr): boolean {
-    return e.type === 'const' && (e as NumConst).value === 1;
+    return e.type === 'const' && (e).value === 1;
 }
 
 
-function makeConst(value: number): NumConst {
+function makeConst(value: number): Expr {
     return { type: 'const', value };
 }
 
-function makeBinOp(op: '+' | '-' | '*' | '/', left: Expr, right: Expr): BinaryOp {
+function makeBinOp(op: '+' | '-' | '*' | '/', left: Expr, right: Expr): Expr {
     return { type: 'binop', op, left, right };
 }
 
-function makeUnary(arg: Expr): UnaryMinus {
+function makeUnary(arg: Expr): Expr {
     return { type: 'unary', op: '-', argument: arg };
 }
 
 function simplifyUnary(arg: Expr): Expr {
     // --x = x
     if (arg.type === 'unary') {
-        return (arg as UnaryMinus).argument;
+        return (arg).argument;
     }
 
     // -0 = 0
@@ -94,14 +94,14 @@ function simplifyUnary(arg: Expr): Expr {
 
     // -(константа) = -константа
     if (arg.type === 'const') {
-        return makeConst(-(arg as NumConst).value);
+        return makeConst(-(arg).value);
     }
 
     // -(neg_const / expr) = pos_const / expr
     if (arg.type === 'binop') {
-        const binop = arg as BinaryOp;
+        const binop = arg;
         if (binop.op === '/' && binop.left.type === 'const') {
-            const leftConst = binop.left as NumConst;
+            const leftConst = binop.left;
             if (leftConst.value < 0) {
                 return makeBinOp('/', makeConst(-leftConst.value), binop.right);
             }
@@ -125,7 +125,7 @@ function simplifyAdd(left: Expr, right: Expr): Expr {
 
     // Константы складываем
     if (left.type === 'const' && right.type === 'const') {
-        return makeConst((left as NumConst).value + (right as NumConst).value);
+        return makeConst((left).value + (right).value);
     }
 
     return makeBinOp('+', left, right);
@@ -144,7 +144,7 @@ function simplifySub(left: Expr, right: Expr): Expr {
 
     // Константы вычитаем
     if (left.type === 'const' && right.type === 'const') {
-        return makeConst((left as NumConst).value - (right as NumConst).value);
+        return makeConst((left).value - (right).value);
     }
 
     return makeBinOp('-', left, right);
@@ -168,7 +168,7 @@ function simplifyMul(left: Expr, right: Expr): Expr {
 
     // Константы умножаем
     if (left.type === 'const' && right.type === 'const') {
-        return makeConst((left as NumConst).value * (right as NumConst).value);
+        return makeConst((left).value * (right).value);
     }
 
     return makeBinOp('*', left, right);
@@ -187,12 +187,12 @@ function simplifyDiv(left: Expr, right: Expr): Expr {
 
     // Константы делим
     if (left.type === 'const' && right.type === 'const') {
-        const rightVal = (right as NumConst).value;
+        const rightVal = (right).value;
         if (rightVal === 0) {
             // Оставляем деление на ноль как есть - оно вызовет ошибку при выполнении
             return makeBinOp('/', left, right);
         }
-        return makeConst(Math.floor((left as NumConst).value / rightVal));
+        return makeConst(Math.floor((left).value / rightVal));
     }
 
     return makeBinOp('/', left, right);
