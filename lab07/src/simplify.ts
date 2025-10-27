@@ -1,135 +1,172 @@
 import { Expr } from "../../lab04";
 import { cost } from "./cost";
 
-type Op = '+' | '-' | '*' | '/';
+type BinaryOperator = '+' | '-' | '*' | '/';
 
-function makeBinOp(op: '+' | '-' | '*' | '/', left: Expr, right: Expr): Expr {
+function createBinaryOp(op: BinaryOperator, left: Expr, right: Expr): Expr {
     return { type: 'binop', op, left, right };
 }
 
-function makeUnary(arg: Expr): Expr {
+function createUnaryOp(arg: Expr): Expr {
     return { type: 'unary', op: '-', argument: arg };
 }
 
-function eq(a: Expr, b: Expr): boolean {
+function expressionsEqual(a: Expr, b: Expr): boolean {
     if (a.type !== b.type) return false;
     switch (a.type) {
         case "const": return b.type === "const" && a.value === b.value;
-        case "var": return b.type === "var" && a.name === (b as any).name;
-        case "unary": return b.type === "unary" && eq(a.argument, (b as any).arg);
+        case "var": return b.type === "var" && a.name === b.name;
+        case "unary": return b.type === "unary" && expressionsEqual(a.argument, b.argument);
         case "binop":
             return b.type === "binop" &&
-                a.op === (b as any).op &&
-                eq(a.left, (b as any).left) &&
-                eq(a.right, (b as any).right);
+                a.op === b.op &&
+                expressionsEqual(a.left, b.left) &&
+                expressionsEqual(a.right, b.right);
     }
 }
 
-function encode(e: Expr): string {
+function serializeExpr(e: Expr): string {
     switch (e.type) {
-        case "const": return `#${e.value}`;
-        case "var": return `$${e.name}`;
-        case "unary": return `~(${encode(e.argument)})`;
-        case "binop": return `(${encode(e.left)}${e.op}${encode(e.right)})`;
+        case "const": return `C${e.value}`;
+        case "var": return `V${e.name}`;
+        case "unary": return `U${serializeExpr(e.argument)}`;
+        case "binop": return `B${e.op}${serializeExpr(e.left)}${serializeExpr(e.right)}`;
     }
 }
 
-type Env = Record<string, Expr>;
+type Bindings = Record<string, Expr>;
 
-function match(pattern: Expr, expr: Expr, env: Env = {}): Env | null {
+function matchPattern(pattern: Expr, expr: Expr, bindings: Bindings = {}): Bindings | null {
     switch (pattern.type) {
         case "const":
-            return (expr.type === "const" && expr.value === pattern.value) ? env : null;
+            return (expr.type === "const" && expr.value === pattern.value) ? bindings : null;
 
         case "var": {
             const name = pattern.name;
-            const bound = env[name];
-            if (!bound) {
-                return { ...env, [name]: expr };
-            } else {
-                return eq(bound, expr) ? env : null;
+            const existing = bindings[name];
+            if (!existing) {
+                return { ...bindings, [name]: expr };
             }
+            return expressionsEqual(existing, expr) ? bindings : null;
         }
 
         case "unary":
             if (expr.type !== "unary") return null;
-            return match(pattern.argument, expr.argument, env);
+            return matchPattern(pattern.argument, expr.argument, bindings);
 
         case "binop":
             if (expr.type !== "binop" || expr.op !== pattern.op) return null;
-            const envL = match(pattern.left, expr.left, env);
-            return envL ? match(pattern.right, expr.right, envL) : null;
+            const leftMatch = matchPattern(pattern.left, expr.left, bindings);
+            return leftMatch ? matchPattern(pattern.right, expr.right, leftMatch) : null;
     }
 }
 
-function substitute(template: Expr, env: Env): Expr {
+function applySubstitution(template: Expr, bindings: Bindings): Expr {
     switch (template.type) {
         case "const": return template;
-        case "var": {
-            const bound = env[template.name];
-            return bound ?? template;
-        }
-        case "unary": return makeUnary(substitute(template.argument, env));
-        case "binop": return makeBinOp(template.op as Op, substitute(template.left, env), substitute(template.right, env));
+        case "var": return bindings[template.name] ?? template;
+        case "unary": return createUnaryOp(applySubstitution(template.argument, bindings));
+        case "binop":
+            return createBinaryOp(
+                template.op as BinaryOperator,
+                applySubstitution(template.left, bindings),
+                applySubstitution(template.right, bindings)
+            );
     }
 }
 
 type Rebuilder = (replacement: Expr) => Expr;
-function* contexts(e: Expr): Generator<[Expr, Rebuilder]> {
-    yield [e, (r: Expr) => r];
 
-    switch (e.type) {
+function* enumerateContexts(expr: Expr): Generator<[Expr, Rebuilder]> {
+    yield [expr, (r: Expr) => r];
+
+    switch (expr.type) {
         case "const":
         case "var":
             return;
 
         case "unary":
-            for (const [sub, rebuild] of contexts(e.argument)) {
-                yield [sub, (r: Expr) => rebuild(makeUnary(r))];
+            for (const [subExpr, rebuild] of enumerateContexts(expr.argument)) {
+                yield [subExpr, (r: Expr) => rebuild(createUnaryOp(r))];
             }
             return;
 
         case "binop":
-            for (const [subL, rebuildL] of contexts(e.left)) {
-                yield [subL, (r: Expr) => rebuildL(makeBinOp(e.op as Op, r, e.right))];
+            for (const [leftSub, rebuildLeft] of enumerateContexts(expr.left)) {
+                yield [leftSub, (r: Expr) => rebuildLeft(createBinaryOp(expr.op as BinaryOperator, r, expr.right))];
             }
-            for (const [subR, rebuildR] of contexts(e.right)) {
-                yield [subR, (r: Expr) => rebuildR(makeBinOp(e.op as Op, e.left, r))];
+            for (const [rightSub, rebuildRight] of enumerateContexts(expr.right)) {
+                yield [rightSub, (r: Expr) => rebuildRight(createBinaryOp(expr.op as BinaryOperator, expr.left, r))];
             }
             return;
     }
 }
 
+function preprocessIdentities(identities: [Expr, Expr][]): [Expr, Expr][] {
+    return identities.slice().sort((a, b) => {
+        const countNodes = (e: Expr): number => {
+            switch (e.type) {
+                case "const":
+                case "var":
+                    return 1;
+                case "unary":
+                    return 1 + countNodes(e.argument);
+                case "binop":
+                    return 1 + countNodes(e.left) + countNodes(e.right);
+            }
+        };
+        return countNodes(a[0]) - countNodes(b[0]);
+    });
+}
+
 export function simplify(e: Expr, identities: [Expr, Expr][]): Expr {
-    const seen = new Set<string>();
-    const worklist: Expr[] = [e];
-    let best: Expr = e;
-    let bestCost = cost(e);
+    const visited = new Set<string>();
+    const queue: Expr[] = [e];
+    let bestExpr: Expr = e;
+    let bestExprCost = cost(e);
 
-    while (worklist.length) {
-        const cur = worklist.shift()!;
-        const key = encode(cur);
-        if (seen.has(key)) continue;
-        seen.add(key);
+    // предобрабатываем идентичности
+    const processedIdentities = preprocessIdentities(identities);
 
-        const c = cost(cur);
-        if (c < bestCost) {
-            best = cur;
-            bestCost = c;
+    // Ограничение на количество итераций для предотвращения зависания
+    const maxIterations = 10000;
+    let iterations = 0;
+
+    while (queue.length && iterations < maxIterations) {
+        iterations++;
+        const currentExpr = queue.shift()!;
+        const encodedExpr = serializeExpr(currentExpr);
+
+        if (visited.has(encodedExpr)) continue;
+        visited.add(encodedExpr);
+
+        const currentCost = cost(currentExpr);
+
+        // Обновляем лучшее решение
+        if (currentCost < bestExprCost) {
+            bestExpr = currentExpr;
+            bestExprCost = currentCost;
         }
 
-        for (const [lhs, rhs] of identities) {
-            for (const [sub, rebuild] of contexts(cur)) {
-                const env = match(lhs, sub);
-                if (env) {
-                    const repl = substitute(rhs, env);
-                    const next = rebuild(repl);
-                    const k2 = encode(next);
-                    if (!seen.has(k2)) worklist.push(next);
+        // Применяем идентичности
+        for (const [pattern, replacement] of processedIdentities) {
+            for (const [subExpr, rebuild] of enumerateContexts(currentExpr)) {
+                const bindings = matchPattern(pattern, subExpr);
+                if (bindings) {
+                    const substituted = applySubstitution(replacement, bindings);
+                    const nextExpr = rebuild(substituted);
+                    const nextEncoded = serializeExpr(nextExpr);
+
+                    if (!visited.has(nextEncoded)) {
+                        const nextCost = cost(nextExpr);
+                        if (nextCost <= currentCost + 2) {
+                            queue.push(nextExpr);
+                        }
+                    }
                 }
             }
         }
     }
 
-    return best;
+    return bestExpr;
 }
