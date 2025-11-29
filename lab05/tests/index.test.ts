@@ -1,5 +1,5 @@
-import { SyntaxError } from "@tvm/lab03";
-import { test } from "@tvm/mark";
+import { SyntaxError } from "../../lab03";
+import { test } from "../../mark";
 import { parseCompileAndExecute } from "../src";
 
 describe('testing addition and multiplication regression', () => {
@@ -28,7 +28,7 @@ describe('testing subtraction and division', () => {
     test("Associativity is preserved across addition and subtraction", 4, parseCompileAndExecute, 3, "5+2-4");
     test("Associativity can be overriden via parentheses (1)", 4, parseCompileAndExecute, 5, "5+(2-4)+(3-1)");
     test("Associativity can be overriden via parentheses (2)", 4, parseCompileAndExecute, -1, "(5+2)-(4+3)-1");
-    
+
     test("Division is supported", 3, parseCompileAndExecute, 2, "42/21");
     test("Division is left-associative", 4, parseCompileAndExecute, 1, "8/4/2");
     test("Division by zero gets runtime error", 3, parseCompileAndExecute, WebAssembly.RuntimeError, "1/0");

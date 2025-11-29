@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 import { c as C, Op, I32 } from "../../wasm";
 import { Expr, NumConst, Variable, BinaryOp, UnaryMinus } from "../../lab04";
-=======
-import { c as C, Op, I32 } from "@tvm/wasm";
-import { Expr } from "@tvm/lab04";
->>>>>>> upstream/main
 import { buildOneFunctionModule, Fn } from "./emitHelper";
 
 const { i32, get_local } = C;
