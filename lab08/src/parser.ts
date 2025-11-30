@@ -117,6 +117,7 @@ export const getFunnyAst = {
         const body = stmt.parse();
 
         // Проверяем уникальность имен
+        // check Повторное определение переменной
         checkUniqueNames(parameters, 'parameter');
         checkUniqueNames(returns, 'return value');
         checkUniqueNames(locals, 'local variable');
@@ -128,6 +129,7 @@ export const getFunnyAst = {
         const used = new Set<string>();
         collectUsedNames(body, used);
 
+        // Использование незадекларированного идентификатора
         for (const name of used) {
             if (!declared.has(name)) {
                 const { startLine, startCol } = getSourceLocation(stmt);

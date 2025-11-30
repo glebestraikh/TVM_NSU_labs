@@ -8,6 +8,7 @@ Funny <: Arithmetic {
 
     ParamList = ListOf<Param, ","> // список параметров функции
     ParamListNonEmpty = NonemptyListOf<Param, ","> // непустой список параметров функции
+    // Использование массивов для входных и выходных параметров
     Param = identifier ":" Type // параметр функции с указанием типа
 
     Type = "int" "[" "]" -- array
@@ -24,11 +25,13 @@ Funny <: Arithmetic {
             | Conditional
             | While
 
+    // Присваивание кортежей и простых значений
     Assignment = LValueList "=" ExprList ";" -- tuple
         | LValue "=" Sum ";" -- simple
 
 
     LValueList = NonemptyListOf<LValue, ",">
+    // Операции обращения к массиву и присваивания элементов массива
     LValue = identifier "[" Sum "]" -- array
         | identifier -- variable
 
