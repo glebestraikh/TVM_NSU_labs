@@ -4,6 +4,11 @@ import { FunnyError } from './index';
 import grammar, { FunnyActionDict } from './funny.ohm-bundle';
 import { MatchResult, Semantics } from 'ohm-js';
 
+// Type system
+export type VarType = 'int' | 'int[]';
+
+type TypeContext = Map<string, VarType>;
+
 // Helper: Получить информацию о позиции в файле
 function getSourceLocation(node?: any) {
     // если нет информации о позиции, вернуть undefined
@@ -100,6 +105,129 @@ function collectUsedNames(node: any, names: Set<string>) {
     } else if (node.kind === 'paren') {
         collectUsedNames(node.inner, names);
     }
+}
+
+// Helper: Определить тип выражения
+// Возвращает типы: если функция возвращает одно значение, возвращает VarType
+// если несколько - возвращает VarType[]
+function getExpressionType(expr: any, context: TypeContext, funcTable?: Map<string, { params: Array<{ name: string; type: VarType }>; returns: Array<{ name: string; type: VarType }> }>): VarType | VarType[] {
+    if (!expr) {
+        throw new FunnyError('Invalid expression', 'TYPE_ERROR');
+    }
+
+    // Константа число - всегда int
+    if (expr.type === 'const') {
+        return 'int';
+    }
+
+    // Переменная
+    if (expr.type === 'var') {
+        const varType = context.get(expr.name);
+        if (!varType) {
+            throw new FunnyError(
+                `Variable '${expr.name}' not found in type context`,
+                'TYPE_ERROR'
+            );
+        }
+        return varType;
+    }
+
+    // Обращение к массиву arr[i] -> int
+    if (expr.type === 'arraccess') {
+        const arrayType = context.get(expr.name);
+        if (!arrayType) {
+            throw new FunnyError(
+                `Array '${expr.name}' not found in type context`,
+                'TYPE_ERROR'
+            );
+        }
+        if (arrayType !== 'int[]') {
+            throw new FunnyError(
+                `Cannot index non-array variable '${expr.name}' of type '${arrayType}'`,
+                'INVALID_ARRAY_ACCESS'
+            );
+        }
+        // Проверяем, что индекс - int
+        const indexType = getExpressionType(expr.index, context, funcTable);
+        if (Array.isArray(indexType)) {
+            throw new FunnyError(
+                `Array index cannot be a tuple`,
+                'TYPE_MISMATCH'
+            );
+        }
+        if (indexType !== 'int') {
+            throw new FunnyError(
+                `Array index must be 'int', got '${indexType}'`,
+                'TYPE_MISMATCH'
+            );
+        }
+        return 'int';
+    }
+
+    // Бинарная операция
+    if (expr.type === 'binop') {
+        const leftType = getExpressionType(expr.left, context, funcTable);
+        const rightType = getExpressionType(expr.right, context, funcTable);
+
+        if (Array.isArray(leftType) || Array.isArray(rightType)) {
+            throw new FunnyError(
+                `Binary operation cannot use tuple results`,
+                'TYPE_MISMATCH'
+            );
+        }
+
+        if (leftType !== 'int' || rightType !== 'int') {
+            throw new FunnyError(
+                `Binary operation '${expr.op}' requires 'int' operands, got '${leftType}' and '${rightType}'`,
+                'TYPE_MISMATCH'
+            );
+        }
+        return 'int';
+    }
+
+    // Унарная операция (унарный минус)
+    if (expr.type === 'unary') {
+        const argType = getExpressionType(expr.argument, context, funcTable);
+        if (Array.isArray(argType)) {
+            throw new FunnyError(
+                `Unary operation cannot use tuple results`,
+                'TYPE_MISMATCH'
+            );
+        }
+        if (argType !== 'int') {
+            throw new FunnyError(
+                `Unary operation '${expr.op}' requires 'int' operand, got '${argType}'`,
+                'TYPE_MISMATCH'
+            );
+        }
+        return 'int';
+    }
+
+    // Вызов функции
+    if (expr.type === 'funccall') {
+        if (!funcTable || !funcTable.has(expr.name)) {
+            throw new FunnyError(
+                `Call to undeclared function '${expr.name}'`,
+                'UNDECLARED_FUNCTION'
+            );
+        }
+        const funcInfo = funcTable.get(expr.name)!;
+        const returnTypes = funcInfo.returns.map(r => r.type);
+
+        // Если функция возвращает одно значение, возвращаем скалярный тип
+        // иначе возвращаем массив типов (для кортежей)
+        if (returnTypes.length === 1) {
+            return returnTypes[0];
+        }
+        return returnTypes;
+    }
+
+    // Скобки
+    if (expr.type === 'paren') {
+        return getExpressionType(expr.inner, context, funcTable);
+    }
+
+    throw new FunnyError(`Unknown expression type: ${expr.type}`, 'TYPE_ERROR');
 }
 
 export const getFunnyAst = {
@@ -282,21 +410,27 @@ export const getFunnyAst = {
 } satisfies FunnyActionDict<any>;
 
 
-// Helper: Проверка корректности вызовов функций
+// Helper: Проверка корректности вызовов функций и типов
 function validateFunctionCalls(module: ast.Module) {
-    //  Map, где ключ — имя функции, а значение — объект с числом параметров и возвращаемых значений
-    const funcTable = new Map<string, { params: number; returns: number }>();
+    // Map с информацией о функциях: параметры, возвращаемые значения
+    const funcTable = new Map<string, {
+        params: Array<{ name: string; type: VarType }>;
+        returns: Array<{ name: string; type: VarType }>;
+    }>();
 
-    // Построить таблицу функций
+    // Построить таблицу функций с типами
     for (const func of module.functions) {
-        funcTable.set(func.name, { params: func.parameters.length, returns: func.returns.length });
+        funcTable.set(func.name, {
+            params: func.parameters.map(p => ({ name: p.name, type: p.varType || 'int' })),
+            returns: func.returns.map(r => ({ name: r.name, type: r.varType || 'int' }))
+        });
     }
 
-    // Проверить узел и его потомков (по дефолту 1 возвращаемое значение)
-    function checkNode(node: any, expectedReturns: number = 1) {
+    // Проверить узел и его потомков
+    function checkNode(node: any, typeContext: TypeContext, expectedReturns: number = 1) {
         if (!node) return;
         if (Array.isArray(node)) {
-            node.forEach(n => checkNode(n, expectedReturns));
+            node.forEach(n => checkNode(n, typeContext, expectedReturns));
             return;
         }
 
@@ -309,65 +443,217 @@ function validateFunctionCalls(module: ast.Module) {
                 );
             }
 
-            const { params, returns } = funcTable.get(node.name)!;
+            const funcInfo = funcTable.get(node.name)!;
+            const { params, returns } = funcInfo;
 
-            if (node.args.length !== params) {
+            if (node.args.length !== params.length) {
                 throw new FunnyError(
-                    `Function '${node.name}' expects ${params} argument(s), but ${node.args.length} provided`,
+                    `Function '${node.name}' expects ${params.length} argument(s), but ${node.args.length} provided`,
                     'ARGUMENT_MISMATCH'
                 );
             }
 
-            if (returns !== expectedReturns) {
+            // Проверяем типы аргументов
+            for (let i = 0; i < node.args.length; i++) {
+                const argType = getExpressionType(node.args[i], typeContext, funcTable);
+                const paramType = params[i].type;
+
+                if (Array.isArray(argType)) {
+                    throw new FunnyError(
+                        `Function '${node.name}' parameter '${params[i].name}' expects '${paramType}', but got tuple result`,
+                        'TYPE_MISMATCH'
+                    );
+                }
+
+                if (argType !== paramType) {
+                    throw new FunnyError(
+                        `Function '${node.name}' parameter '${params[i].name}' expects '${paramType}', but got '${argType}'`,
+                        'TYPE_MISMATCH'
+                    );
+                }
+                checkNode(node.args[i], typeContext, 1);
+            }
+
+            if (returns.length !== expectedReturns) {
                 throw new FunnyError(
-                    `Function '${node.name}' returns ${returns} value(s), but ${expectedReturns} expected`,
+                    `Function '${node.name}' returns ${returns.length} value(s), but ${expectedReturns} expected`,
                     'RETURN_MISMATCH'
                 );
             }
 
-            node.args.forEach((arg: any) => checkNode(arg, 1));
             return;
         }
 
-        // Контейнеры, которые требуют проверки
+        // Проверка присваивания
         if (node.type === 'assign') {
             const numTargets = node.targets.length;
-            node.exprs.forEach((expr: any) => checkNode(expr, numTargets));
-            node.targets.forEach((target: any) => checkNode(target, 1));
-        } else if (node.type === 'block') {
-            node.stmts.forEach((stmt: any) => checkNode(stmt, 1));
-        } else if (node.type === 'if') {
-            checkNode(node.condition, 1);
-            checkNode(node.then, 1);
-            checkNode(node.else, 1);
-        } else if (node.type === 'while') {
-            checkNode(node.condition, 1);
-            checkNode(node.body, 1);
-        } else if (['arraccess', 'larr', 'binop'].includes(node.type)) {
-            checkNode(node.index, 1);
-            checkNode(node.left, 1);
-            checkNode(node.right, 1);
-        } else if (node.type === 'unary') {
-            checkNode(node.argument, 1);
+            const numExprs = node.exprs.length;
+
+            // Вычисляем общее количество возвращаемых значений справа
+            let totalReturns = 0;
+            const exprTypes: (VarType | VarType[])[] = [];
+
+            for (const expr of node.exprs) {
+                const exprType = getExpressionType(expr, typeContext, funcTable);
+                exprTypes.push(exprType);
+
+                if (Array.isArray(exprType)) {
+                    totalReturns += exprType.length;
+                } else {
+                    totalReturns += 1;
+                }
+            }
+
+            if (numTargets !== totalReturns) {
+                throw new FunnyError(
+                    `Assignment expects ${numTargets} value(s), but ${totalReturns} provided`,
+                    'ASSIGNMENT_MISMATCH'
+                );
+            }
+
+            // Проверяем типы каждого значения и целевого места
+            let targetIndex = 0;
+            for (let i = 0; i < numExprs; i++) {
+                const expr = node.exprs[i];
+                const exprType = exprTypes[i];
+                const exprTypes_array = Array.isArray(exprType) ? exprType : [exprType];
+
+                for (const exprSubType of exprTypes_array) {
+                    const target = node.targets[targetIndex];
+
+                    // Определяем тип целевого места
+                    let targetType: VarType;
+                    if (target.type === 'lvar') {
+                        targetType = typeContext.get(target.name) || 'int';
+                    } else if (target.type === 'larr') {
+                        // arr[i] = value -> value должен быть int
+                        targetType = 'int';
+                        // Проверяем что arr - это массив
+                        const arrType = typeContext.get(target.name);
+                        if (arrType !== 'int[]') {
+                            throw new FunnyError(
+                                `Cannot index non-array variable '${target.name}' of type '${arrType}'`,
+                                'INVALID_ARRAY_ACCESS'
+                            );
+                        }
+                        // Проверяем что индекс - int
+                        const indexType = getExpressionType(target.index, typeContext, funcTable);
+                        if (Array.isArray(indexType)) {
+                            throw new FunnyError(
+                                `Array index cannot be a tuple`,
+                                'TYPE_MISMATCH'
+                            );
+                        }
+                        if (indexType !== 'int') {
+                            throw new FunnyError(
+                                `Array index must be 'int', got '${indexType}'`,
+                                'TYPE_MISMATCH'
+                            );
+                        }
+                    } else {
+                        targetType = 'int';
+                    }
+
+                    // Проверяем совпадение типов
+                    if (targetType !== exprSubType) {
+                        throw new FunnyError(
+                            `Type mismatch in assignment: expected '${targetType}', got '${exprSubType}'`,
+                            'TYPE_MISMATCH'
+                        );
+                    }
+
+                    targetIndex++;
+                }
+
+                checkNode(expr, typeContext, numTargets);
+            }
+
+            return;
         }
 
-        // Условия (predicates)
+        // Проверка условных операторов
+        if (node.type === 'if') {
+            checkNode(node.condition, typeContext, 1);
+            checkNode(node.then, typeContext, 1);
+            checkNode(node.else, typeContext, 1);
+            return;
+        }
+
+        // Проверка циклов
+        if (node.type === 'while') {
+            checkNode(node.condition, typeContext, 1);
+            checkNode(node.body, typeContext, 1);
+            return;
+        }
+
+        // Проверка блоков
+        if (node.type === 'block') {
+            node.stmts.forEach((stmt: any) => checkNode(stmt, typeContext, 1));
+            return;
+        }
+
+        // Проверка условий
         if (node.kind === 'comparison') {
-            checkNode(node.left, 1);
-            checkNode(node.right, 1);
-        } else if (node.kind === 'not') {
-            checkNode(node.condition, 1);
-        } else if (['and', 'or', 'implies'].includes(node.kind)) {
-            checkNode(node.left, 1);
-            checkNode(node.right, 1);
-        } else if (node.kind === 'paren') {
-            checkNode(node.inner, 1);
+            const leftType = getExpressionType(node.left, typeContext, funcTable);
+            const rightType = getExpressionType(node.right, typeContext, funcTable);
+
+            if (Array.isArray(leftType) || Array.isArray(rightType)) {
+                throw new FunnyError(
+                    `Comparison operands cannot be tuples`,
+                    'TYPE_MISMATCH'
+                );
+            }
+
+            if (leftType !== rightType) {
+                throw new FunnyError(
+                    `Comparison operands must have the same type: '${leftType}' vs '${rightType}'`,
+                    'TYPE_MISMATCH'
+                );
+            }
+            checkNode(node.left, typeContext, 1);
+            checkNode(node.right, typeContext, 1);
+            return;
+        }
+
+        if (node.kind === 'not') {
+            checkNode(node.condition, typeContext, 1);
+            return;
+        }
+
+        if (['and', 'or', 'implies'].includes(node.kind)) {
+            checkNode(node.left, typeContext, 1);
+            checkNode(node.right, typeContext, 1);
+            return;
+        }
+
+        if (node.kind === 'paren') {
+            checkNode(node.inner, typeContext, 1);
+            return;
         }
     }
 
     // Проверить все функции
     for (const func of module.functions) {
-        checkNode(func.body, 1);
+        // Создаем контекст типов для функции
+        const typeContext: TypeContext = new Map();
+
+        // Добавляем параметры
+        for (const param of func.parameters) {
+            typeContext.set(param.name, param.varType || 'int');
+        }
+
+        // Добавляем возвращаемые значения
+        for (const ret of func.returns) {
+            typeContext.set(ret.name, ret.varType || 'int');
+        }
+
+        // Добавляем локальные переменные
+        for (const local of func.locals) {
+            typeContext.set(local.name, local.varType || 'int');
+        }
+
+        // Проверяем тело функции
+        checkNode(func.body, typeContext, 1);
     }
 }
 
