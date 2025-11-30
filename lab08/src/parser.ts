@@ -411,7 +411,7 @@ export const getFunnyAst = {
 
 
 // Helper: Проверка корректности вызовов функций и типов
-function validateFunctionCalls(module: ast.Module) {
+function validateAst(module: ast.Module) {
     // Map с информацией о функциях: параметры, возвращаемые значения
     const funcTable = new Map<string, {
         params: Array<{ name: string; type: VarType }>;
@@ -676,7 +676,7 @@ export function parseFunny(source: string): ast.Module {
     }
 
     const module = semantics(matchResult).parse();
-    validateFunctionCalls(module);
+    validateAst(module);
 
     return module;
 }
