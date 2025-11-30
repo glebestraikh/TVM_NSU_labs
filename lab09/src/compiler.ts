@@ -6,6 +6,29 @@ const { i32, i64, varuint32, get_local, set_local, call, if_, void_block, void_l
     str_ascii, export_entry, func_type_m, function_body, type_section, function_section,
     export_section, code_section } = c;
 
+/**
+ * Компилирует Funny модуль в WebAssembly
+ * 
+ * Уровень C (3): Базовые возможности
+ * ✓ Компиляция модулей с единственной функцией
+ * ✓ Поддержка целочисленных входных и выходных параметров
+ * ✓ Функции с единственным возвращаемым значением
+ * ✓ Операторы присваивания
+ * ✓ Блочные операторы
+ * ✓ Обработка комментариев (в lab08)
+ * 
+ * Уровень B (4): Расширенные возможности
+ * ✓ Функции с несколькими возвращаемыми значениями
+ * ✓ Модули с несколькими функциями
+ * ✓ Вызовы функций в выражениях
+ * ✓ Условные операторы (if/else)
+ * ✓ Циклы (while)
+ * 
+ * Уровень A (5): Продвинутые возможности
+ * ✓ Поддержка массивов для входных и выходных параметров (int[] как i64)
+ * ✓ Операции обращения к массиву (array_get) и присваивания элементов (array_set)
+ * ✓ Присваивание кортежей (множественное присваивание из вызова функции)
+ */
 export async function compileModule<M extends Module>(m: M, name?: string): Promise<WebAssembly.Exports> {
     const functionIndexMap = buildFunctionIndexMap(m);
 
@@ -38,6 +61,7 @@ function buildFunctionIndexMap(m: Module): Map<string, number> {
 }
 
 // функция создает типы функций для секции типов
+// Поддерживает int[] параметры и возвращаемые значения как i64 (уровень A5)
 function buildTypeSection(m: Module): any[] {
     return m.functions.map(func => {
         const paramTypes = func.parameters.map(p =>
@@ -159,6 +183,8 @@ function compileBinOp(expr: any, locals: string[], functionIndexMap: Map<string,
 }
 
 function compileArrayAccess(expr: any, locals: string[], functionIndexMap: Map<string, number>): Op<I32> {
+    // Поддержка операции обращения к элементу массива (уровень A5)
+    // array[index] -> array_get(array_var, index)
     const arrIdx = compileExpr(expr.index, locals, functionIndexMap);
     const arrVar = c.get_local(i64, locals.indexOf(expr.name));
     return c.array_get(arrVar, arrIdx);
@@ -190,6 +216,8 @@ function compileLValue(lvalue: LValue, locals: string[], functionIndexMap: Map<s
         }
 
         case "larr": {
+            // Поддержка присваивания элементов массива
+            // array[index] = value -> array_set(array_var, index, value)
             const idxExpr = compileExpr(lv.index, locals, functionIndexMap);
             const arrVar = c.get_local(i64, locals.indexOf(lv.name));
             return {
@@ -322,6 +350,8 @@ function compileAssign(stmt: any, locals: string[], functionIndexMap: Map<string
 
 function compileTupleAssign(stmt: any, targets: LValue[], exprs: Expr[], locals: string[],
     functionIndexMap: Map<string, number>, ops: Op<Void>[]): void {
+    // Поддержка присваивания кортежей - множественное присваивание из вызова функции (уровень A5)
+    // a, b = func(x) -> вызов func, получение нескольких возвращаемых значений
     const expr = exprs[0];
 
     if ((expr as any).type !== 'funccall') {
