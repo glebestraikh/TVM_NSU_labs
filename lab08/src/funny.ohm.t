@@ -25,26 +25,24 @@ Funny <: Arithmetic {
             | While
 
     Assignment = LValueList "=" ExprList ";" -- tuple
-        | LValue "=" AddExpr ";" -- simple
+        | LValue "=" Sum ";" -- simple
 
 
     LValueList = NonemptyListOf<LValue, ",">
-    LValue = identifier "[" AddExpr "]" -- array
+    LValue = identifier "[" Sum "]" -- array
         | identifier -- variable
 
-    ExprList = NonemptyListOf<AddExpr, ",">
+    ExprList = NonemptyListOf<Sum, ",">
 
     Atom := FunctionCall
         | ArrayAccess
         | "(" Sum ")" -- parenthesis
         | number
 
-    AddExpr = Sum
-
     FunctionCall = identifier "(" ArgList ")" // вызов функции
-    ArgList = ListOf<AddExpr, ","> // список аргументов
+    ArgList = ListOf<Sum, ","> // список аргументов
 
-    ArrayAccess = identifier "[" AddExpr "]" // доступ к элементу массива
+    ArrayAccess = identifier "[" Sum "]" // доступ к элементу массива
 
     identifier = ~keyword (letter | "_") (letter | digit | "_")* // идентификаторы
 
@@ -63,12 +61,12 @@ Funny <: Arithmetic {
 
     NotCond = "not"* AtomCond
 
-    Comparison = AddExpr "==" AddExpr -- eq
-               | AddExpr "!=" AddExpr -- neq
-               | AddExpr ">=" AddExpr -- ge
-               | AddExpr "<=" AddExpr -- le
-               | AddExpr ">" AddExpr -- gt
-               | AddExpr "<" AddExpr -- lt
+    Comparison = Sum "==" Sum -- eq
+               | Sum "!=" Sum -- neq
+               | Sum ">=" Sum -- ge
+               | Sum "<=" Sum -- le
+               | Sum ">" Sum -- gt
+               | Sum "<" Sum -- lt
 
 
     space += comment // Кроме обычных whitespace, теперь коммент тоже считается пробелом
