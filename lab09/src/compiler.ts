@@ -6,29 +6,6 @@ const { i32, i64, varuint32, get_local, set_local, call, if_, void_block, void_l
     str_ascii, export_entry, func_type_m, function_body, type_section, function_section,
     export_section, code_section } = c;
 
-/**
- * Компилирует Funny модуль в WebAssembly
- * 
- * Уровень C (3): Базовые возможности
- * ✓ Компиляция модулей с единственной функцией
- * ✓ Поддержка целочисленных входных и выходных параметров
- * ✓ Функции с единственным возвращаемым значением
- * ✓ Операторы присваивания
- * ✓ Блочные операторы
- * ✓ Обработка комментариев (в lab08)
- * 
- * Уровень B (4): Расширенные возможности
- * ✓ Функции с несколькими возвращаемыми значениями
- * ✓ Модули с несколькими функциями
- * ✓ Вызовы функций в выражениях
- * ✓ Условные операторы (if/else)
- * ✓ Циклы (while)
- * 
- * Уровень A (5): Продвинутые возможности
- * ✓ Поддержка массивов для входных и выходных параметров (int[] как i64)
- * ✓ Операции обращения к массиву (array_get) и присваивания элементов (array_set)
- * ✓ Присваивание кортежей (множественное присваивание из вызова функции)
- */
 export async function compileModule<M extends Module>(m: M, name?: string): Promise<WebAssembly.Exports> {
     const functionIndexMap = buildFunctionIndexMap(m);
 
@@ -38,10 +15,10 @@ export async function compileModule<M extends Module>(m: M, name?: string): Prom
     const codeSection = buildCodeSection(m, functionIndexMap);
 
     const mod = c.module([
-        type_section(typeSection),
-        function_section(functionSection),
-        export_section(exportSection),
-        code_section(codeSection)
+        c.type_section(typeSection),
+        c.function_section(functionSection),
+        c.export_section(exportSection),
+        c.code_section(codeSection)
     ]);
 
     const emitter = new BufferedEmitter(new ArrayBuffer(mod.z));
@@ -350,7 +327,7 @@ function compileAssign(stmt: any, locals: string[], functionIndexMap: Map<string
 
 function compileTupleAssign(stmt: any, targets: LValue[], exprs: Expr[], locals: string[],
     functionIndexMap: Map<string, number>, ops: Op<Void>[]): void {
-    // Поддержка присваивания кортежей - множественное присваивание из вызова функции (уровень A5)
+    // Поддержка присваивания кортежей - множественное присваивание из вызова функции
     // a, b = func(x) -> вызов func, получение нескольких возвращаемых значений
     const expr = exprs[0];
 
@@ -367,7 +344,6 @@ function compileTupleAssign(stmt: any, targets: LValue[], exprs: Expr[], locals:
     for (let i = 0; i < targets.length; i++) {
         const target = targets[i];
         const lval = compileLValue(target, locals, functionIndexMap);
-        ops.push(lval.set(i32.const(0)));
     }
 }
 
