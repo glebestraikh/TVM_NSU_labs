@@ -6,5 +6,5 @@ export * from './parser';
 export * from './resolver';
 
 export function parseAndResolve(source: string, origin?: string) {
-    return resolveModule(parseFunnier(source, origin));
+    return resolveModule(parseFunnier(source));
 }
