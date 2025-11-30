@@ -352,16 +352,6 @@ export const getFunnyAst = {
     },
 } satisfies FunnyActionDict<any>;
 
-export const semantics: FunnySemanticsExt = grammar.Funny.createSemantics() as FunnySemanticsExt;
-semantics.addOperation("parse()", getFunnyAst);
-
-export interface FunnySemanticsExt extends Semantics {
-    (match: MatchResult): FunnyActionsExt;
-}
-
-interface FunnyActionsExt {
-    parse(): ast.Module;
-}
 
 // Проверка корректности вызовов функций
 function validateFunctionCalls(module: ast.Module) {
@@ -492,6 +482,17 @@ function validateFunctionCalls(module: ast.Module) {
     for (const func of module.functions) {
         checkNode(func.body, 1);
     }
+}
+
+export const semantics: FunnySemanticsExt = grammar.Funny.createSemantics() as FunnySemanticsExt;
+semantics.addOperation("parse()", getFunnyAst);
+
+export interface FunnySemanticsExt extends Semantics {
+    (match: MatchResult): FunnyActionsExt;
+}
+
+interface FunnyActionsExt {
+    parse(): ast.Module;
 }
 
 export function parseFunny(source: string): ast.Module {
