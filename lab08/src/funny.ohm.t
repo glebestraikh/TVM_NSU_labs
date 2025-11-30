@@ -2,51 +2,56 @@
 Funny <: Arithmetic {
     Module = Function+
 
-    Function = identifier "(" ParamList ")" "returns" ParamListNonEmpty UsesOpt? Statement
+    Function = identifier "(" ParamList ")" "returns" ParamListNonEmpty UsesOpt? Statement // определение функции
 
-    ParamList = ListOf<Param, ",">
-    ParamListNonEmpty = NonemptyListOf<Param, ",">
-    Param = identifier ":" Type
+    UsesOpt = "uses" ParamList // локальная(ые) переменная(ые) функции 
 
-    UsesOpt = "uses" ParamList
+    ParamList = ListOf<Param, ","> // список параметров функции
+    ParamListNonEmpty = NonemptyListOf<Param, ","> // непустой список параметров функции
+    Param = identifier ":" Type // параметр функции с указанием типа
 
     Type = "int" "[" "]" -- array
          | "int" -- int
 
-    Statement = Assignment
-              | Block
-              | Conditional
-              | While
-
-    Assignment = LValueList "=" ExprList ";" -- tuple
-               | LValue "=" AddExpr ";" -- simple
-
-    LValueList = NonemptyListOf<LValue, ",">
-    ExprList = NonemptyListOf<AddExpr, ",">
-
-    LValue = identifier "[" AddExpr "]" -- array
-           | identifier -- variable
-
-    Block = "{" Statement* "}"
+    While = "while" "(" Condition ")" Statement
 
     Conditional = "if" "(" Condition ")" Statement ("else" Statement)?
 
-    While = "while" "(" Condition ")" Statement
+    Block = "{" Statement* "}"
+
+    Statement = Assignment
+            | Block
+            | Conditional
+            | While
+
+    Assignment = LValueList "=" ExprList ";" -- tuple
+        | LValue "=" AddExpr ";" -- simple
+
+
+    LValueList = NonemptyListOf<LValue, ",">
+    LValue = identifier "[" AddExpr "]" -- array
+        | identifier -- variable
+
+    ExprList = NonemptyListOf<AddExpr, ",">
+
+    Atom := FunctionCall
+        | ArrayAccess
+        | "(" Sum ")" -- parenthesis
+        | number
 
     AddExpr = Sum
 
-    Atom := FunctionCall
-           | ArrayAccess
-           | "(" Sum ")" -- parenthesis
-           | number
+    FunctionCall = identifier "(" ArgList ")" // вызов функции
+    ArgList = ListOf<AddExpr, ","> // список аргументов
 
-    FunctionCall = identifier "(" ArgList ")"
-    ArgList = ListOf<AddExpr, ",">
+    ArrayAccess = identifier "[" AddExpr "]" // доступ к элементу массива
 
-    ArrayAccess = identifier "[" AddExpr "]"
+    identifier = ~keyword (letter | "_") (letter | digit | "_")* // идентификаторы
 
-    identifier = ~keyword (letter | "_") (letter | digit | "_")*
-
+    AtomCond = "true" -- true // атомарные условия
+             | "false" -- false
+             | Comparison -- comparison
+             | "(" Condition ")" -- paren
 
     Condition = ImplyCond
 
@@ -58,11 +63,6 @@ Funny <: Arithmetic {
 
     NotCond = "not"* AtomCond
 
-    AtomCond = "true" -- true
-             | "false" -- false
-             | Comparison -- comparison
-             | "(" Condition ")" -- paren
-
     Comparison = AddExpr "==" AddExpr -- eq
                | AddExpr "!=" AddExpr -- neq
                | AddExpr ">=" AddExpr -- ge
@@ -71,9 +71,9 @@ Funny <: Arithmetic {
                | AddExpr "<" AddExpr -- lt
 
 
-    space += comment
+    space += comment // Кроме обычных whitespace, теперь коммент тоже считается пробелом
     comment = "//" (~"\n" any)* ("\n" | end)
 
     keyword = "if" | "else" | "while" | "returns" | "uses" | "int"
-            | "true" | "false" | "and" | "or" | "not"
+            | "true" | "false" | "and" | "or" | "not" // зарезервированные слова для условий
 }
