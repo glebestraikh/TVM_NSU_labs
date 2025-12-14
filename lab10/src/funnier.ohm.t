@@ -74,4 +74,3 @@ Funnier <: Funny {
 
     keyword := keyword | "requires" | "ensures" | "invariant" | "forall" | "exists" | "=>"
 }
-
