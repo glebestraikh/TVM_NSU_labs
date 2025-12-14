@@ -1056,13 +1056,6 @@ function convertExprToZ3(
                     throw new Error(`неизвестный бинарный опер: ${(expr as any).op}`);
             }
         case "funccall":
-            // if (expr.name === "foo1") {
-            //     return z3.Int.val(42);
-            // }
-            // if (expr.name === "foo2" && expr.args.length === 1) {
-            //     const arg = convertExprToZ3(expr.args[0], env, z3);
-            //     return arg.add(1);
-            // }
 
             // конвертация всех аргументов в Z3
             const args = expr.args.map((arg: any) => convertExprToZ3(arg, env, z3, module, solver));

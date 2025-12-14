@@ -7,13 +7,16 @@ const { i32, i64, varuint32, get_local, set_local, call, if_, void_block, void_l
     export_section, code_section } = c;
 
 export async function compileModule<M extends Module>(m: M, name?: string): Promise<WebAssembly.Exports> {
+    // functionName → index
     const functionIndexMap = buildFunctionIndexMap(m);
 
+    // Генерирует 4 секции wasm
     const typeSection = buildTypeSection(m);
     const functionSection = buildFunctionSection(m);
     const exportSection: ExportEntry[] = buildExportSection(m);
     const codeSection = buildCodeSection(m, functionIndexMap);
 
+    // Собирает wasm-модуль
     const mod = c.module([
         c.type_section(typeSection),
         c.function_section(functionSection),
@@ -21,10 +24,14 @@ export async function compileModule<M extends Module>(m: M, name?: string): Prom
         c.code_section(codeSection)
     ]);
 
+    // mod.z — размер бинарного wasm-модуля в байтах
     const emitter = new BufferedEmitter(new ArrayBuffer(mod.z));
     mod.emit(emitter);
 
+    // emitter.buffer = готовый wasm-бинарник
+    // Создаёт экземпляр модуля
     const wasmModule = await WebAssembly.instantiate(emitter.buffer);
+    // JS функции
     return wasmModule.instance.exports;
 }
 
@@ -39,7 +46,16 @@ function buildFunctionIndexMap(m: Module): Map<string, number> {
 
 // функция создает типы функций для секции типов
 // Поддерживает int[] параметры и возвращаемые значения как i64 (уровень A5)
+/*
+ Результат buildTypeSection
+[
+  type 0: (i32, i32) -> (i32),
+  type 1: (i64) -> (i32),
+  ...
+]
+*/
 function buildTypeSection(m: Module): any[] {
+    //  Проходим по всем функциям Funny-модуля.
     return m.functions.map(func => {
         const paramTypes = func.parameters.map(p =>
             p.varType === 'int[]' ? c.i64 : c.i32
@@ -52,12 +68,25 @@ function buildTypeSection(m: Module): any[] {
 }
 
 // функция создает секцию функций с индексами типов функций
+/*
+Function section говорит:
+
+«Функция №0 имеет тип №0»
+«Функция №1 имеет тип №1»
+
+(type 0 (func (param i32) (result i32)))
+(type 1 (func (param i32 i32) (result i32)))
+
+(func (type 0) ...)
+(func (type 1) ...)
+*/
 function buildFunctionSection(m: Module): any[] {
     return m.functions.map((_, i) => c.varuint32(i));
 }
 
 // функция создает секцию экспорта
 // Благодаря этому, после компиляции модуля в WebAssembly мы сможем вызывать функцию по имени из JS
+// Экспорт вида: (export "gcd" (func 0))
 function buildExportSection(m: Module): any[] {
     return m.functions.map((func, i) =>
         c.export_entry(c.str_ascii(func.name), c.external_kind.function, c.varuint32(i))
@@ -66,8 +95,10 @@ function buildExportSection(m: Module): any[] {
 
 // функция создает секцию кода с телами функций
 function buildCodeSection(m: Module, functionIndexMap: Map<string, number>): any[] {
+    // Обход всех функций
     return m.functions.map(func => {
         // все локальные переменные функции (параметры, возвращаемые значения и uses)
+        // компилятор делает таблицу имён → индексов
         const allLocals = [
             ...func.parameters.map(p => p.name),
             ...func.returns.map(r => r.name),
@@ -78,6 +109,7 @@ function buildCodeSection(m: Module, functionIndexMap: Map<string, number>): any
         const bodyOps: any[] = compileStatement(func.body, allLocals, functionIndexMap);
 
         // загрузка возвращаемых значений в стек перед завершением функции  
+        // В WebAssembly функция возвращает значения через стек
         for (const ret of func.returns) {
             const idx = allLocals.indexOf(ret.name);
             const type = ret.varType === 'int[]' ? c.i64 : c.i32;
@@ -199,6 +231,7 @@ function compileLValue(lvalue: LValue, locals: string[], functionIndexMap: Map<s
             const arrVar = c.get_local(i64, locals.indexOf(lv.name));
             return {
                 set: (v) => void_block([c.array_set(arrVar, idxExpr, v)]),
+                // оборачивает операцию в блок, возвращающий void (WebAssembly функция присваивания не возвращает значения
                 get: () => c.array_get(arrVar, idxExpr)
             };
         }

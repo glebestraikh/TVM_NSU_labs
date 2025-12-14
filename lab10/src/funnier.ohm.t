@@ -1,7 +1,15 @@
-
-Funnier <: Funny {
+Funnier <: Funny { // Funnier - дополнение над грамматикой Funny
+    // Модуль состоит из одной или нескольких единиц
+    // Аннотированные функции (AnnotatedFunctionDef)
     Module := (Formula | AnnotatedFunctionDef)+
 
+    /*
+    •	Формула имеет:
+	•	Имя (identifier)
+	•	Параметры (ParamList) — можно пустым
+	•	Тело (Predicate) после =>
+    formula allPositive(arr: int[]) => forall(i: int | arr[i] > 0);
+    */
     Formula = identifier "(" ParamList ")" "=>" Predicate
 
     Type := "void"
@@ -11,6 +19,17 @@ Funnier <: Funny {
     ParamListNonEmpty := "void" -- void
                        | NonemptyListOf<Param, ","> -- params
 
+    //  Определение функции
+    /*
+	•	Имя (identifier)
+	•	Параметры (ParamList)
+	•	Предусловие (PreOpt — опционально)
+	•	Возвращаемые значения (ReturnList)
+	•	Постусловие (PostOpt — опционально)
+	•	Используемые локальные переменные (UsesOpt? — опционально)
+	•	Инвариант цикла (InvariantOpt — опционально)
+	•	Тело функции (Statement)
+    */
     AnnotatedFunctionDef = identifier "(" ParamList ")" PreOpt "returns" ReturnList PostOpt UsesOpt? InvariantOpt Statement
     
     ReturnList = "void" -- void
@@ -23,9 +42,6 @@ Funnier <: Funny {
                 | While
 
     FunctionCallStmt = FunctionCall ";"
-
-    Assignment := LValueList "=" ExprList ";" -- tuple
-                | LValue "=" Sum ";" -- simple
     
     PreOpt = "requires" Predicate  -- withPredicate
            |                        -- empty

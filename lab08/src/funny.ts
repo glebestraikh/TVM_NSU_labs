@@ -1,10 +1,12 @@
 import * as arith from "../../lab04";
 
+// корневой узел AST
 export interface Module {
     type: 'module';
     functions: FunctionDef[];
 }
 
+// 	FunctionDef описывает функцию
 export interface FunctionDef {
     type: 'fun';
     name: string;
@@ -14,6 +16,7 @@ export interface FunctionDef {
     body: Statement;
 }
 
+// ParameterDef описывает имя и тип переменной
 export interface ParameterDef {
     type: "param";
     name: string;
@@ -23,17 +26,21 @@ export interface ParameterDef {
 // Statements
 export type Statement = AssignStmt | BlockStmt | ConditionalStmt | WhileStmt;
 
+// Присваивание
 export interface AssignStmt {
     type: "assign";
     targets: LValue[];
     exprs: Expr[];
 }
 
+//  интерфейс для блочного оператора в AST 
+// указывает, что узел представляет блок кода, заключённый в { ... }
 export interface BlockStmt {
     type: "block";
     stmts: Statement[];
 }
 
+// ConditionalStmt — if (cond) then else
 export interface ConditionalStmt {
     type: "if";
     condition: Condition;
@@ -41,13 +48,14 @@ export interface ConditionalStmt {
     else: Statement | null;
 }
 
+// WhileStmt — цикл while (cond) body
 export interface WhileStmt {
     type: "while";
     condition: Condition;
     body: Statement;
 }
 
-// LValues
+// левая часть присваивания
 export type LValue = VarLValue | ArrLValue;
 
 export interface VarLValue {
@@ -61,7 +69,7 @@ export interface ArrLValue {
     index: Expr;
 }
 
-// Expressions
+// Выражения
 export type Expr = arith.Expr | FuncCallExpr | ArrAccessExpr;
 
 export interface FuncCallExpr {
@@ -117,6 +125,7 @@ export interface ImpliesCond {
     right: Condition;
 }
 
+// интерфейс для скобочного условия в AST
 export interface ParenCond {
     kind: "paren";
     inner: Condition;

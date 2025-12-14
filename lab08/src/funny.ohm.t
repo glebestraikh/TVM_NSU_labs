@@ -1,8 +1,14 @@
 
-Funny <: Arithmetic {
-    Module = Function+
+Funny <: Arithmetic { // Funny расширяет грамматику Arithmetic (из лабораторной работы 04)
+    Module = Function+ // Модуль состоит из одной или нескольких функций
 
-    Function = identifier "(" ParamList ")" "returns" ParamListNonEmpty UsesOpt? Statement // определение функции
+    // определение функции
+    // имя функции (identifier)
+    // список параметров (ParamList)
+    // Ключевое слово returns + непустой список возвращаемых параметров
+    // Опциональные локальные переменные (UsesOpt?)
+    // Тело функции (Statement)
+    Function = identifier "(" ParamList ")" "returns" ParamListNonEmpty UsesOpt? Statement
 
     UsesOpt = "uses" ParamList // локальная(ые) переменная(ые) функции 
 
@@ -35,6 +41,7 @@ Funny <: Arithmetic {
     LValue = identifier "[" Sum "]" -- array
         | identifier -- variable
 
+    // список выражений, разделённых запятой, для кортежного присваивания.
     ExprList = NonemptyListOf<Sum, ",">
 
     Atom := FunctionCall

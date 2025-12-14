@@ -42,11 +42,18 @@ function checkUniqueNames(items: ast.ParameterDef[], kind: string, node?: any) {
 }
 
 // Helper: Парсить итерацию
+// В Ohm правило типа ListOf или NonemptyListOf создаёт специальный “Iteration” узел
 function parseIteration(node: any): any[] {
     return node.asIteration().children.map((c: any) => c.parse());
 }
 
 // Helper:Сбор всех использованных имен в узле (для проверки объявления)
+// Проходит по любому AST-узлу рекурсивно.
+// Находит все переменные, которые реально используются в выражениях, присваиваниях, индексах массивов, функциях и условиях.
+// Добавляет их имена в переданный Set
+// После этого множества names можно использовать для:
+//  проверки использования незадекларированных переменных,
+//  предупреждения о неиспользованных локальных переменных или параметрах функции.
 function collectUsedNames(node: any, names: Set<string>) {
     if (!node) return;
     if (Array.isArray(node)) {
@@ -410,7 +417,7 @@ export const getFunnyAst = {
 } satisfies FunnyActionDict<any>;
 
 
-// Helper: Проверка корректности вызовов функций и типов
+// Проверка корректности вызовов функций и типов
 function validateAst(module: ast.Module) {
     // Map с информацией о функциях: параметры, возвращаемые значения
     const funcTable = new Map<string, {
@@ -657,26 +664,37 @@ function validateAst(module: ast.Module) {
     }
 }
 
+//  создаёт объект семантики для грамматики Funny
+// В Ohm семантика — это набор правил, которые определяют, как превращать разобранный текст в AST или другой объект
 export const semantics: FunnySemanticsExt = grammar.Funny.createSemantics() as FunnySemanticsExt;
+// добавляет операцию parse() к семантике, которая вызывает функции из getFunnyAst для каждого узла грамматики.
 semantics.addOperation("parse()", getFunnyAst);
 
+// если применить семантику к результату match, то мы получаем объект FunnyActionsExt
 export interface FunnySemanticsExt extends Semantics {
     (match: MatchResult): FunnyActionsExt;
 }
 
+// FunnyActionsExt имеет метод parse(), который возвращает AST для модуля (ast.Module)
 interface FunnyActionsExt {
     parse(): ast.Module;
 }
 
 export function parseFunny(source: string): ast.Module {
+    // Разбирает текст source по правилу Module грамматики Funny
+    // Возвращает объект matchResult, содержащий результат синтаксического разбора
     const matchResult = grammar.Funny.match(source, 'Module');
 
     if (!matchResult.succeeded()) {
         throw new FunnyError(matchResult.message || 'Syntax error', 'SYNTAX_ERROR');
     }
 
+    // Применяем семантику к matchResult
+    // Вызываем метод parse(), который строит AST (ast.Module)
     const module = semantics(matchResult).parse();
+    // функция, которая проверяет семантические ошибки
     validateAst(module);
 
+    // Возврат AST
     return module;
 }
