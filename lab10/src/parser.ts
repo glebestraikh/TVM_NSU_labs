@@ -6,6 +6,18 @@ import * as ast from './funnier';
 // Получаем semantic actions из базовой Funny грамматики
 const baseSemanticsActions = require('../../lab08/out/parser').getFunnyAst;
 
+const _findParsable = (node: any): any | null => {
+    if (!node) return null;
+    if (typeof node.parse === 'function') return node;
+    if (node.children && node.children.length) {
+        for (const c of node.children) {
+            const found = _findParsable(c);
+            if (found) return found;
+        }
+    }
+    return null;
+};
+
 const getFunnierAst: any = {
     ...baseSemanticsActions,
 
@@ -105,20 +117,25 @@ const getFunnierAst: any = {
         return result;
     },
 
+
+
     OrPred(first: any, rest1: any, rest2: any) {
         let result = first.parse();
-        if (!rest1 || rest1.numChildren === 0) {
+        const rest = rest2 || rest1;
+        if (!rest || rest.numChildren === 0) {
             return result;
         }
-        for (let i = 0; i < rest1.numChildren; i++) {
-            const item = rest1.child(i);
+        for (let i = 0; i < rest.numChildren; i++) {
+            const item = rest.child(i);
             if (!item) continue;
-            const rightPart = item.child(1);
-            if (!rightPart) continue;
+            // find the child with a parse() method (e.g., AndPred)
+            const rightNode = _findParsable(item) || (item.child && item.child(0));
+            if (!rightNode) continue;
+            const parsedRight = rightNode.parse();
             result = {
                 kind: 'or',
                 left: result,
-                right: rightPart.parse()
+                right: parsedRight
             };
         }
         return result;
@@ -126,18 +143,20 @@ const getFunnierAst: any = {
 
     AndPred(first: any, rest1: any, rest2: any) {
         let result = first.parse();
-        if (!rest1 || rest1.numChildren === 0) {
+        const rest = rest2 || rest1;
+        if (!rest || rest.numChildren === 0) {
             return result;
         }
-        for (let i = 0; i < rest1.numChildren; i++) {
-            const item = rest1.child(i);
+        for (let i = 0; i < rest.numChildren; i++) {
+            const item = rest.child(i);
             if (!item) continue;
-            const rightPart = item.child(1);
-            if (!rightPart) continue;
+            const rightNode = _findParsable(item) || (item.child && item.child(0));
+            if (!rightNode) continue;
+            const parsedRight = rightNode.parse();
             result = {
                 kind: 'and',
                 left: result,
-                right: rightPart.parse()
+                right: parsedRight
             };
         }
         return result;
