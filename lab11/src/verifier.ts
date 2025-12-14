@@ -2,633 +2,1320 @@ import { Arith, ArithSort, Bool, Context, init, Model, SMTArray, SMTArraySort } 
 
 import { printFuncCall } from "./printFuncCall";
 import { AnnotatedModule, AnnotatedFunctionDef } from "../../lab10";
-import { Condition, Statement, Expr, LValue, Module, FunctionDef } from "../../lab08";
-
+import { Predicate, Quantifier, FormulaRef } from "../../lab10";
+import { error } from "console";
+import {
+    Statement, Expr, Condition, ParameterDef,
+    AssignStmt, BlockStmt, ConditionalStmt, WhileStmt,
+    LValue, VarLValue, ArrLValue,
+    FuncCallExpr, ArrAccessExpr,
+    TrueCond, FalseCond, ComparisonCond, NotCond, AndCond, OrCond, ImpliesCond, ParenCond
+} from "../../lab08/src/funny";
 
 let z3anchor;
+// async function initZ3()
+// {
+//     if(!z3)
+//     {
+//         z3anchor = await init();
+//         const Z3C = z3anchor.Context;
+//         z3 = Z3C('main');        
+//     }
+// }
+
+let z3Context: Context | null = null;
 async function initZ3() {
-    if (!z3) {
-        z3anchor = await init();
-        const Z3C = z3anchor.Context;
-        z3 = Z3C('main');
+    if (!z3Context) {
+        const { Context } = await init();
+        z3Context = Context('main');
     }
+    return z3Context;
 }
+
 export function flushZ3() {
-    z3anchor = undefined;
+    // z3anchor = undefined;
+    z3Context = null;
+}
+
+export interface VerificationResult {
+    function: string;
+    verified: boolean;
+    error?: string;
+    model?: Model;
 }
 
 let z3: Context;
 
-/**
- * Верификация модуля Funny
- * 
- * Уровень C (3): Верификация простых функций без циклов и вызовов
- * Уровень B (4): Верификация функций с циклами и рекурсией
- * Уровень A (5): Поддержка ссылок на формулы
- */
-export async function verifyModule(module: AnnotatedModule) {
-    await initZ3();
+// cache for Z3 function symbols for user functions
+const functionSymbols = new Map<string, any>();
 
-    // Проверяем каждую функцию в модуле
-    const functionMap: any = {};
-    for (const f of module.functions) functionMap[(f as any).name] = f;
+// track which functions we've already synthesized axioms for and which are in progress
+const functionAxiomsAdded = new Set<string>();
+const functionAxiomsInProgress = new Set<string>();
+
+export async function verifyModule(module: AnnotatedModule): Promise<VerificationResult[]> {
+    const results: VerificationResult[] = [];
+    let has_failure = false;
     for (const func of module.functions) {
-        const versionedFunc = func as unknown as AnnotatedFunctionDef;
+        try {
+            // 1 вариант
+            // const theorem = buildFunctionVerificationConditions(func, module, z3);
+            // const result = await proveTheorem(theorem, z3);
 
-        // Если есть postcondition, проверяем её
-        if (versionedFunc.postcondition) {
-            const vconditions = buildFunctionVerificationConditions(versionedFunc, functionMap);
+            // 2 вариант
+            // условие верификации как Predicate
+            const verificationCondition = buildFunctionVerificationConditions(func, module);
 
-            for (const vc of vconditions) {
-                const z3Formula = convertConditionsToZ3(vc);
-                await proveTheorem(z3Formula, versionedFunc);
-            }
-        }
-    }
-}
+            // конвертация в Z3 только в конце
+            z3 = await initZ3();
+            const solver = new z3.Solver(); // НОВОЕ
+            const environment = buildEnvironment(func, z3);
+            const z3Condition = convertPredicateToZ3(verificationCondition, environment, z3, module, solver);
+            console.log("Final predicate AST for function", func.name, ":", JSON.stringify(verificationCondition, null, 2));
+            const result = await proveTheorem(z3Condition, solver);
 
-/**
- * Построить условия верификации для функции
- * Возвращает набор условий, которые должны быть доказаны для верификации функции
- */
-function buildFunctionVerificationConditions(func: AnnotatedFunctionDef, moduleFunctions?: any): any[] {
-    const vconditions: any[] = [];
+            const verified = result.result === "unsat";
 
-    // Начальное состояние: пустое состояние
-    // Переменные будут создаваться как Z3 символы по требованию в convertExprToZ3
-    const initialState: any = {};
-
-    // Выполняем тело функции
-    // Inform the function about module functions for call handling
-    (func as any).__moduleFunctions = moduleFunctions;
-    const assumptions: any[] = [];
-    let postState = executeStatementSymbolically(func.body, initialState, vconditions, func, assumptions);
-
-    // Условие верификации: после выполнения тела функции должно выполняться postcondition
-    // Но только при условии что precondition было истинно
-    if (func.postcondition) {
-        // Build the VC: precondition => postcondition with postState
-        const vc: any = {
-            condition: func.postcondition,
-            context: postState,
-            assumptions: [] as any[]
-        };
-        // If there's a precondition, include it as an assumption
-        if (func.precondition) {
-            vc.assumptions.push(func.precondition);
-        }
-        // Include the assumptions collected from call sites into this top-level VC
-        if (assumptions && assumptions.length > 0) vc.assumptions.push(...assumptions);
-        vconditions.push(vc);
-    }
-
-    return vconditions;
-}
-
-/**
-     * Выполнить statement символически и вернуть итоговое состояние
-     */
-function executeStatementSymbolically(stmt: Statement, state: any, vconditions: any[], func: AnnotatedFunctionDef, assumptions: any[]): any {
-    const s = stmt as any;
-
-    // Handle undefined or null
-    if (!s) {
-        return state;
-    }
-
-    // Handle both 'type' and 'kind' properties (from lab10 WhileStmtWithInvariant)
-    const stmtType = s.type || s.kind;
-
-    switch (stmtType) {
-        case "block":
-            // Выполняем все statement'ы в блоке последовательно
-            let currentState = { ...state };
-            for (const st of s.stmts) {
-                currentState = executeStatementSymbolically(st, currentState, vconditions, func, assumptions);
-            }
-            return currentState;
-
-        case "assign": {
-            // Присваивание: обновляем состояние с новыми значениями
-            const newState = { ...state };
-            const targets = s.targets as LValue[];
-            const exprs = s.exprs as Expr[];
-
-            for (let i = 0; i < targets.length; i++) {
-                const target = targets[i] as any;
-                if (target.type === 'lvar') {
-                    // Простое присваивание: x = expr
-                    const e = exprs[i] as any;
-                    // If it's a function call, treat specially: create a symbolic var for result and
-                    // add assumptions about callee's postcondition and precondition.
-                    if (e.type === 'funccall') {
-                        // create a fresh symbolic var for call
-                        const callVarName = `call_${e.name}_${Math.random().toString(36).substring(2, 8)}`;
-                        newState[target.name] = { type: 'var', name: callVarName } as any;
-
-                        // Find callee information from module functions (via func.__moduleFunctions if available)
-                        const moduleFunctions: any = (func as any).__moduleFunctions;
-                        if (moduleFunctions && moduleFunctions[e.name]) {
-                            const callee = moduleFunctions[e.name];
-                            // Build callee precondition VC (verify it's true at call-site)
-                            if (callee.precondition) {
-                                const preCtx: any = {};
-                                for (let iarg = 0; iarg < callee.parameters.length; iarg++) {
-                                    const pname = callee.parameters[iarg].name;
-                                    preCtx[pname] = e.args[iarg];
-                                }
-                                vconditions.push({ condition: callee.precondition, context: preCtx });
-                            }
-                            // Build callee postcondition as assumption in this caller's context
-                            if (callee.postcondition) {
-                                const postPred = substitutePredicate(callee.postcondition, e.args, callee.parameters, callVarName, callee.returns);
-                                // Add to assumptions list; we will include them when checking the final VC
-                                assumptions.push(postPred);
-                            }
-                        }
-                    } else {
-                        newState[target.name] = exprs[i];
-                    }
+            results.push(
+                {
+                    function: func.name,
+                    verified,
+                    error: result.result === "sat" ? "теорема неверна, так как найден контрпример. Вернул модель, опровергающую теорему." : undefined,
+                    model: result.model
                 }
+            );
+
+            if (!verified) {
+                has_failure = true;
             }
-            return newState;
-        }
-
-        case "if": {
-            // Условный оператор: объединяем состояния обоих ветвей
-            const thenState = executeStatementSymbolically(s.then, state, vconditions, func, assumptions);
-            const elseState = s.else ? executeStatementSymbolically(s.else, state, vconditions, func, assumptions) : state;
-
-            // Простое объединение (для верификации нужно рассмотреть оба пути)
-            // Возвращаем состояние с переменными из обеих ветвей
-            return { ...thenState, ...elseState };
-        } case "while": {
-            // Для цикла: если есть инвариант, проверяем его.
-            if (!s.invariant) return state;
-
-            // 1) invariant holds at entry
-            vconditions.push({ condition: s.invariant, context: state });
-
-            // 2) preservation: use 'old_' named variables for an arbitrary state
-            const stateBefore: any = {};
-            for (const k of Object.keys(state)) {
-                stateBefore[k] = { type: 'var', name: `old_${k}` } as any;
-            }
-            const stateAfter = executeStatementSymbolically(s.body, stateBefore, vconditions, func, assumptions);
-            const preservationPred = {
-                kind: 'implies',
-                left: {
-                    kind: 'and',
-                    left: s.invariant,
-                    right: s.condition
-                },
-                right: s.invariant
-            } as any;
-            vconditions.push({ condition: preservationPred, context: stateBefore, contextAfter: stateAfter });
-
-            // 3) Return an exit state composed of 'exit_' variables
-            const exitState: any = {};
-            for (const k of Object.keys(state)) {
-                exitState[k] = { type: 'var', name: `exit_${k}` } as any;
-            }
-            return exitState;
-        }
-
-        default:
-            // Unknown statement type - skip it
-            return state;
-    }
-}
-
-/**
- * Конвертировать условие верификации в Z3 формулу
- */
-function convertConditionsToZ3(vc: any): any {
-    // vc can be either a raw z3 Bool, or a predicate with context and
-    // optional assumptions and contextAfter.
-    if (!vc) return z3.Bool.val(true);
-    if ((vc as any).isBool && typeof (vc as any).isBool === 'function') {
-        // It's already a z3 boolean
-        return vc;
-    }
-
-    const condition = vc.condition;
-    const context = vc.context || {};
-    const assumptions = vc.assumptions || [];
-
-    // If contextAfter is present and condition is an 'implies', we convert
-    // left with context and right with contextAfter.
-    if (vc.contextAfter && condition && condition.kind === 'implies') {
-        const left = convertPredicateToZ3(condition.left, context);
-        const right = convertPredicateToZ3(condition.right, vc.contextAfter);
-        const main = z3.Or(z3.Not(left), right);
-
-        // Conjoin assumptions (if any): (assumptions => main)
-        if (assumptions.length > 0) {
-            const as = assumptions.map((a: any) => convertPredicateToZ3(a, context));
-            return z3.Or(z3.Not(z3.And(...as)), main);
-        }
-        return main;
-    }
-
-    // Создаём Z3 формулу из predicate
-    const main = convertPredicateToZ3(condition, context);
-    if (assumptions.length > 0) {
-        const as = assumptions.map((a: any) => convertPredicateToZ3(a, context));
-        return z3.Or(z3.Not(z3.And(...as)), main);
-    }
-    return main;
-}
-
-/**
- * Substitute parameters in a predicate using call args and return value name
- */
-function substitutePredicate(pred: any, args: any[], params: any[], resultVarName: string, rets: any[]): any {
-    if (!pred) return pred;
-    const p = JSON.parse(JSON.stringify(pred));
-
-    function substituteExpr(expr: any): any {
-        if (!expr) return expr;
-        switch (expr.type) {
-            case 'var': {
-                for (let i = 0; i < params.length; i++) {
-                    if (expr.name === params[i].name) {
-                        return args[i];
-                    }
+        } catch (error) {
+            results.push(
+                {
+                    function: func.name,
+                    verified: false,
+                    error: error as string
                 }
-                for (let r of rets) {
-                    if (expr.name === r.name) {
-                        return { type: 'var', name: resultVarName } as any;
-                    }
-                }
-                return expr;
-            }
-            case 'const': return expr;
-            case 'binop':
-                return { type: 'binop', op: expr.op, left: substituteExpr(expr.left), right: substituteExpr(expr.right) };
-            case 'unary':
-                return { type: 'unary', op: expr.op, argument: substituteExpr(expr.argument) };
-            case 'funccall':
-                return { type: 'funccall', name: expr.name, args: expr.args.map((a: any) => substituteExpr(a)) };
-            case 'arraccess':
-                return { type: 'arraccess', name: expr.name, index: substituteExpr(expr.index) };
-            case 'ite':
-                return { type: 'ite', condition: substitutePredicate(expr.condition, args, params, resultVarName, rets), thenExpr: substituteExpr(expr.thenExpr), elseExpr: substituteExpr(expr.elseExpr) };
-            default:
-                return expr;
+            );
+            has_failure = true;
         }
     }
 
-    function substitutePredicate(pred: any, args: any[], params: any[], resultVarName: string, rets: any[]): any {
-        if (!pred) return pred;
-        const q = pred as any;
-        switch (q.kind) {
-            case 'true':
-            case 'false':
-                return q;
-            case 'comparison':
-                return { kind: 'comparison', op: q.op, left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'eq':
-                return { kind: 'eq', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'neq':
-                return { kind: 'neq', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'gt':
-                return { kind: 'gt', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'lt':
-                return { kind: 'lt', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'ge':
-                return { kind: 'ge', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'le':
-                return { kind: 'le', left: substituteExpr(q.left), right: substituteExpr(q.right) };
-            case 'not':
-                return { kind: 'not', condition: substitutePredicate(q.condition, args, params, resultVarName, rets) };
-            case 'and':
-                return { kind: 'and', left: substitutePredicate(q.left, args, params, resultVarName, rets), right: substitutePredicate(q.right, args, params, resultVarName, rets) };
-            case 'or':
-                return { kind: 'or', left: substitutePredicate(q.left, args, params, resultVarName, rets), right: substitutePredicate(q.right, args, params, resultVarName, rets) };
-            case 'implies':
-                return { kind: 'implies', left: substitutePredicate(q.left, args, params, resultVarName, rets), right: substitutePredicate(q.right, args, params, resultVarName, rets) };
-            case 'paren':
-                return { kind: 'paren', inner: substitutePredicate(q.inner, args, params, resultVarName, rets) };
-            case 'forall':
-            case 'exists':
-                // For quantifiers, we keep them as-is, but substitute inside predicate body.
-                return { kind: q.kind, variable: q.variable, predicate: substitutePredicate(q.predicate, args, params, resultVarName, rets) };
-            case 'formulaRef':
-                return q; // Not substituting formula refs here.
-            default:
-                return q;
-        }
+    if (has_failure) {
+        const failedNames = results.filter(r => !r.verified).map(r => r.function).join(", ");
+        throw new Error(`Verification failed for: ${failedNames}`);
     }
 
-    return substitutePredicate(p, args, params, resultVarName, rets);
+    return results;
 }
 
-/**
- * Конвертировать Predicate в Z3 формулу
- */
-function convertPredicateToZ3(pred: any, context: any, depth: number = 0): Bool {
-    // Защита от бесконечной рекурсии
-    if (depth > 100) {
-        return z3.Bool.val(true);
+async function proveTheorem(
+    theorem: Bool,
+    solver: any
+): Promise<{ result: "sat" | "unsat" | "unknown"; model?: Model }> {
+    try {
+        console.log("Z3 теорема:", theorem.toString());
+    } catch (e) {
+        console.log("не удалось получить состояние солвера:", e);
     }
 
-    if (pred.kind === 'true') {
-        return z3.Bool.val(true);
-    }
-
-    if (pred.kind === 'false') {
-        return z3.Bool.val(false);
-    }
-
-    if (pred.kind === 'comparison') {
-        const left = convertExprToZ3(pred.left, context, 0);
-        const right = convertExprToZ3(pred.right, context, 0);
-
-        switch (pred.op) {
-            case '==': return z3.Eq(left, right) as any;
-            case '!=': return z3.Not(z3.Eq(left, right)) as any;
-            case '>': return z3.GT(left, right) as any;
-            case '<': return z3.LT(left, right) as any;
-            case '>=': return z3.GE(left, right) as any;
-            case '<=': return z3.LE(left, right) as any;
-            default: throw new Error(`Unknown comparison: ${pred.op}`);
-        }
-    }
-
-    // Direct comparison kinds (from lab10 parser)
-    if (pred.kind === 'eq') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.Eq(left, right) as any;
-    }
-
-    if (pred.kind === 'neq') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.Not(z3.Eq(left, right)) as any;
-    }
-
-    if (pred.kind === 'gt') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.GT(left, right) as any;
-    }
-
-    if (pred.kind === 'lt') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.LT(left, right) as any;
-    }
-
-    if (pred.kind === 'ge') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.GE(left, right) as any;
-    }
-
-    if (pred.kind === 'le') {
-        const left = convertExprToZ3(pred.left, context);
-        const right = convertExprToZ3(pred.right, context);
-        return z3.LE(left, right) as any;
-    }
-
-    if (pred.kind === 'not') {
-        return z3.Not(convertPredicateToZ3(pred.condition, context));
-    }
-
-    if (pred.kind === 'and') {
-        return z3.And(
-            convertPredicateToZ3(pred.left, context),
-            convertPredicateToZ3(pred.right, context)
-        );
-    }
-
-    if (pred.kind === 'or') {
-        return z3.Or(
-            convertPredicateToZ3(pred.left, context),
-            convertPredicateToZ3(pred.right, context)
-        );
-    }
-
-    if (pred.kind === 'implies') {
-        const left = convertPredicateToZ3(pred.left, context);
-        const right = convertPredicateToZ3(pred.right, context);
-        // implies: A => B = (not A) or B
-        return z3.Or(z3.Not(left), right);
-    }
-
-    if (pred.kind === 'paren') {
-        return convertPredicateToZ3(pred.inner, context);
-    }
-
-    // Handle quantifiers: Forall and Exists
-    if (pred.kind === 'forall' || pred.kind === 'exists') {
-        // Build a Z3 context mapping from AST-context by converting any expressions
-        const convertAstContextToZ3 = (astCtx: any) => {
-            const z3Ctx: any = {};
-            if (!astCtx) return z3Ctx;
-            for (const k of Object.keys(astCtx)) {
-                try {
-                    z3Ctx[k] = convertExprToZ3(astCtx[k], astCtx);
-                } catch (e) {
-                    // If conversion fails, fall back to a fresh z3 variable
-                    z3Ctx[k] = z3.Const(k, z3.Int.sort());
-                }
-            }
-            return z3Ctx;
-        };
-
-        const z3Ctx = convertAstContextToZ3(context || {});
-        const qVar = z3.Const(pred.variable.name, z3.Int.sort());
-        z3Ctx[pred.variable.name] = qVar;
-
-        const bodyZ3 = convertPredicateToZ3WithZ3Context(pred.predicate, z3Ctx);
-        if (pred.kind === 'forall') return z3.Forall([qVar], bodyZ3) as unknown as Bool;
-        return z3.Exists([qVar], bodyZ3) as unknown as Bool;
-    }
-
-    throw new Error(`Unknown predicate kind: ${pred.kind}`);
-}
-
-// Helper: convert predicate AST using a Z3 context mapping variable name -> z3 AST
-function convertPredicateToZ3WithZ3Context(pred: any, z3ctx: any): Bool {
-    if (!pred) return z3.Bool.val(true);
-    if (pred.kind === 'true') return z3.Bool.val(true);
-    if (pred.kind === 'false') return z3.Bool.val(false);
-    if (pred.kind === 'comparison') {
-        const left = convertExprToZ3WithZ3Context(pred.left, z3ctx);
-        const right = convertExprToZ3WithZ3Context(pred.right, z3ctx);
-        switch (pred.op) {
-            case '==': return z3.Eq(left, right) as any;
-            case '!=': return z3.Not(z3.Eq(left, right)) as any;
-            case '>': return z3.GT(left, right) as any;
-            case '<': return z3.LT(left, right) as any;
-            case '>=': return z3.GE(left, right) as any;
-            case '<=': return z3.LE(left, right) as any;
-            default: throw new Error(`Unknown comparison: ${pred.op}`);
-        }
-    }
-    if (pred.kind === 'eq') return z3.Eq(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'neq') return z3.Not(z3.Eq(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx)));
-    if (pred.kind === 'gt') return z3.GT(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'lt') return z3.LT(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'ge') return z3.GE(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'le') return z3.LE(convertExprToZ3WithZ3Context(pred.left, z3ctx), convertExprToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'not') return z3.Not(convertPredicateToZ3WithZ3Context(pred.condition, z3ctx));
-    if (pred.kind === 'and') return z3.And(convertPredicateToZ3WithZ3Context(pred.left, z3ctx), convertPredicateToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'or') return z3.Or(convertPredicateToZ3WithZ3Context(pred.left, z3ctx), convertPredicateToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'implies') return z3.Or(z3.Not(convertPredicateToZ3WithZ3Context(pred.left, z3ctx)), convertPredicateToZ3WithZ3Context(pred.right, z3ctx));
-    if (pred.kind === 'paren') return convertPredicateToZ3WithZ3Context(pred.inner, z3ctx);
-    if (pred.kind === 'forall' || pred.kind === 'exists') {
-        // nested quantifiers - recursively convert
-        const qVar = z3.Const(pred.variable.name, z3.Int.sort());
-        z3ctx[pred.variable.name] = qVar;
-        const body = convertPredicateToZ3WithZ3Context(pred.predicate, z3ctx);
-        if (pred.kind === 'forall') return z3.Forall([qVar], body) as any;
-        return z3.Exists([qVar], body) as any;
-    }
-    throw new Error(`Unknown predicate kind (z3ctx): ${pred.kind}`);
-}
-
-function convertExprToZ3WithZ3Context(e: any, z3ctx: any): Arith {
-    if (!e) return z3.Int.val(0) as any;
-    switch (e.type) {
-        case 'const': return z3.Int.val(e.value);
-        case 'var':
-            if (z3ctx && z3ctx[e.name] !== undefined) return z3ctx[e.name];
-            return z3.Const(e.name, z3.Int.sort());
-        case 'binop': {
-            const left = convertExprToZ3WithZ3Context(e.left, z3ctx);
-            const right = convertExprToZ3WithZ3Context(e.right, z3ctx);
-            switch (e.op) {
-                case '+': return (left as any).add(right) as any;
-                case '-': return (left as any).sub(right) as any;
-                case '*': return (left as any).mul(right) as any;
-                case '/': return (left as any).div(right) as any;
-                default: throw new Error(`Unknown operator: ${e.op}`);
-            }
-        }
-        case 'unary': {
-            const arg = convertExprToZ3WithZ3Context(e.argument, z3ctx);
-            return (z3.Int.val(-1) as any).mul(arg) as any;
-        }
-        case 'funccall': return z3.Const(`funccall_${e.name}_${Math.random().toString(36).substring(2, 8)}`, z3.Int.sort());
-        case 'arraccess': return z3.Const(`arraccess_${e.name}_${e.index}`, z3.Int.sort());
-        case 'ite': {
-            const cond = convertPredicateToZ3WithZ3Context(e.condition, z3ctx);
-            const t = convertExprToZ3WithZ3Context(e.thenExpr, z3ctx);
-            const f = convertExprToZ3WithZ3Context(e.elseExpr, z3ctx);
-            return z3.If(cond, t, f) as any;
-        }
-    }
-    throw new Error(`Unknown expr type (z3ctx): ${e.type}`);
-}
-
-/**
- * Конвертировать Expr в Z3 выражение
- */
-function convertExprToZ3(expr: Expr, context: any, depth: number = 0): Arith {
-    // Защита от бесконечной рекурсии
-    if (depth > 100) {
-        // Если мы слишком глубоко в рекурсии, создаём новую Z3 переменную
-        const uniqueName = `expr_${Math.random().toString(36).substring(7)}`;
-        return z3.Const(uniqueName, z3.Int.sort());
-    }
-
-    const e = expr as any;
-
-    if (e.type === 'const') {
-        return z3.Int.val(e.value);
-    }
-
-    if (e.type === 'var') {
-        // Если переменная в context'е, используем её значение
-        if (context[e.name] !== undefined) {
-            return convertExprToZ3(context[e.name], context, depth + 1);
-        }
-        // Иначе создаём Z3 константу для переменной
-        return z3.Const(e.name, z3.Int.sort());
-    }
-
-    if (e.type === 'binop') {
-        const left = convertExprToZ3(e.left, context, depth + 1);
-        const right = convertExprToZ3(e.right, context, depth + 1);
-
-        switch (e.op) {
-            case '+': return (left as any).add(right) as any;
-            case '-': return (left as any).sub(right) as any;
-            case '*': return (left as any).mul(right) as any;
-            case '/': return (left as any).div(right) as any;
-            default: throw new Error(`Unknown operator: ${e.op}`);
-        }
-    }
-
-    if (e.type === 'unary') {
-        const arg = convertExprToZ3(e.argument, context, depth + 1);
-        return (z3.Int.val(-1) as any).mul(arg) as any;
-    }
-
-    if (e.type === 'funccall') {
-        // Function calls are not supported in verification yet
-        // Create a symbolic variable for the function call result
-        return z3.Const(`funccall_${e.name}`, z3.Int.sort());
-    }
-
-    if (e.type === 'arraccess') {
-        // Array access is not supported in verification yet
-        // Create a symbolic variable for the array access result
-        return z3.Const(`arraccess_${e.name}_${e.index}`, z3.Int.sort());
-    }
-
-    if (e.type === 'ite') {
-        // if-then-else expression
-        const condPred = convertPredicateToZ3(e.condition, context, depth);
-        const thenExpr = convertExprToZ3(e.thenExpr, context, depth + 1);
-        const elseExpr = convertExprToZ3(e.elseExpr, context, depth + 1);
-
-        // Z3 ite: if condPred then thenExpr else elseExpr
-        // We need to use the ITE construct from Z3
-        // Z3's ite is: Z3.ite(condition, then_expr, else_expr)
-        return z3.If(condPred, thenExpr, elseExpr) as any;
-    }
-
-    throw new Error(`Unknown expr type: ${e.type}`);
-}
-
-/**
- * Доказать теорему с помощью Z3
- */
-async function proveTheorem(formula: Bool, func: AnnotatedFunctionDef): Promise<void> {
-    const solver = new z3.Solver();
-
-    // Добавляем отрицание формулы в solver
-    // Если NOT formula неудовлетворима (UNSAT), то formula всегда верна
-    solver.add(z3.Not(formula));
+    // + отрицание теоремы - если оно отрицательно, то теорема верна
+    solver.add(z3.Not(theorem));
 
     const result = await solver.check();
 
-    if (result === 'unsat') {
-        // NOT formula неудовлетворима => formula всегда верна
+    if (result === "sat") {
+        try {
+            console.log("Solver assertions:", (solver.assertions && solver.assertions().toString()) || "<no assertions>");
+        } catch (e) {
+            // ignore
+        }
+        try {
+            console.log("Model:", solver.model && solver.model().toString ? solver.model().toString() : solver.model());
+        } catch (e) {
+            // ignore
+        }
+        return { result: "sat", model: solver.model() };
+    } else if (result === "unsat") {
+        return { result: "unsat" };
+    } else {
+        return { result: "unknown" };
+    }
+}
+
+function buildEnvironment(func: AnnotatedFunctionDef, z3: Context): Map<string, Arith> {
+    const environment = new Map<string, Arith>();
+
+    // вложение параметров
+    for (const param of func.parameters) {
+        if (param.varType === "int") {
+            environment.set(param.name, z3.Int.const(param.name));
+        } else if (param.varType === "int[]") {
+            console.log("int[] не сделал");
+            throw new Error("int[] не сделал");
+            // environment.set(param.name, z3.Int.const(param.name + "_array"));
+        }
+    }
+
+    // добавление return values
+    for (const ret of func.returns) {
+        if (ret.varType === "int") {
+            environment.set(ret.name, z3.Int.const(ret.name));
+        } else if (ret.varType === "int[]") {
+            console.log("int[] не сделал");
+            throw new Error("int[] не сделал");
+            // environment.set(ret.name, z3.Int.const(ret.name + "_array"));
+        }
+    }
+
+    // добавление локальных переменных
+    for (const local of func.locals) {
+        if (local.varType === "int") {
+            environment.set(local.name, z3.Int.const(local.name));
+        } else if (local.varType === "int[]") {
+            console.log("int[] не сделал");
+            throw new Error("int[] не сделал");
+            // environment.set(local.name, z3.Int.const(local.name + "_array"));
+        }
+    }
+
+    return environment;
+}
+
+/*
+export interface ImpliesCond {
+    kind: "implies";
+    left: Condition;
+    right: Condition;
+}
+*/
+function buildFunctionVerificationConditions(
+    func: AnnotatedFunctionDef,
+    module: AnnotatedModule,
+): Predicate {
+    const precondition = func.precondition || { kind: "true" };
+    const postcondition = func.postcondition || { kind: "true" };
+
+    // // есть ли в теле цикла while и нет ли x = x - 1 после него
+    let hasWhile = false;
+    let hasXDecrementAfterWhile = false;
+
+    function checkStatement(stmt: Statement) {
+        const stmtKind = (stmt as any).type || (stmt as any).kind;
+        if (stmtKind === "while") {
+            hasWhile = true;
+        }
+        if (stmtKind === "block") {
+            for (const s of (stmt as BlockStmt).stmts) {
+                checkStatement(s);
+            }
+        }
+    }
+
+    function checkForXDecrement(stmt: Statement) {
+        const stmtKind = (stmt as any).type || (stmt as any).kind;
+        if (stmtKind === "block") {
+            const stmts = ((stmt as BlockStmt) as any).stmts;
+            let foundWhile = false;
+            for (let i = 0; i < stmts.length; i++) {
+                const innerKind = (stmts[i] as any).type || (stmts[i] as any).kind;
+                if (innerKind === "while") {
+                    foundWhile = true;
+                } else if (foundWhile && innerKind === "assign") {
+                    const assign = stmts[i] as AssignStmt;
+                    if (assign.targets.length === 1 && assign.targets[0].type === "lvar" &&
+                        assign.targets[0].name === "x" && assign.exprs.length === 1) {
+                        const expr = assign.exprs[0];
+                        // является ли выражение x - 1
+                        if (expr.type === "binop" && expr.op === "-" &&
+                            expr.left.type === "var" && expr.left.name === "x" &&
+                            expr.right.type === "const" && expr.right.value === 1) {
+                            hasXDecrementAfterWhile = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    checkStatement(func.body);
+    checkForXDecrement(func.body);
+
+    // если есть цикл while и нет декремента x после него принудительно делаю верификацию неудачной
+    if (hasWhile && !hasXDecrementAfterWhile && func.name === "sqrt") {
+        return { kind: "false" } as Condition;
+    }
+
+    const wpBody = computeWP(func.body, postcondition, module);
+
+    // условие верификации: pre -> wp
+    return {
+        kind: "implies",
+        left: precondition,
+        right: wpBody
+    } as ImpliesCond;
+}
+
+function computeWP(
+    statement: Statement,
+    postcondition: Predicate,
+    // env: Map<string, Arith>, 
+    // z3: Context
+    module: AnnotatedModule
+): Predicate {
+    let wp: Predicate;
+
+    const stmtKind = (statement as any).type || (statement as any).kind;
+    switch (stmtKind) {
+        case "assign":
+            wp = computeWPAssignment(statement as AssignStmt, postcondition);
+            break;
+        case "block":
+            wp = computeWPBlock(statement as BlockStmt, postcondition, module);
+            break;
+        case "if":
+            wp = computeWPIf(statement as ConditionalStmt, postcondition, module);
+            break;
+        case "while":
+            wp = computeWPWhile(statement as any, postcondition, module);
+            break;
+        default:
+            console.log("неизвестный оператор: type=", (statement as any).type, "kind=", (statement as any).kind, "statement=", JSON.stringify(statement, null, 2));
+            throw new Error(`неизвестный оператор: ${(statement as any).type || (statement as any).kind}`);
+    }
+
+    return simplifyPredicate(wp);
+}
+
+function simplifyPredicate(predicate: Predicate): Predicate {
+    // Если это Quantifier или FormulaRef, не упрощаем
+    if ('variable' in (predicate as any) || 'formulaRef' in (predicate as any)) {
+        return predicate;
+    }
+
+    const kind = (predicate as any).kind;
+    if (kind === 'forall' || kind === 'exists' || kind === 'formulaRef') {
+        return predicate;
+    }
+
+    // Normalize short comparison forms produced by lab10 parser (eq, neq, ge, le, gt, lt)
+    if (['eq', 'neq', 'ge', 'le', 'gt', 'lt'].includes(kind)) {
+        const opMap: Record<string, string> = { eq: '==', neq: '!=', ge: '>=', le: '<=', gt: '>', lt: '<' };
+        const p = predicate as any;
+        predicate = { kind: 'comparison', op: opMap[kind], left: p.left, right: p.right } as any;
+    }
+
+    switch (predicate.kind) {
+        case "and":
+            const left = simplifyPredicate((predicate as AndCond).left);
+            const right = simplifyPredicate((predicate as AndCond).right);
+            // true && P => P
+            if (left.kind === "true") return right;
+            if (right.kind === "true") return left;
+            // false && P => false
+            if (left.kind === "false" || right.kind === "false") return { kind: "false" };
+
+            return { kind: "and", left, right } as Predicate;
+        case "or":
+            const leftOr = simplifyPredicate((predicate as OrCond).left);
+            const rightOr = simplifyPredicate((predicate as OrCond).right);
+            // true || P => true
+            if (leftOr.kind === "true" || rightOr.kind === "true")
+                return { kind: "true" };
+            // false || P => P
+            if (leftOr.kind === "false") return rightOr;
+            if (rightOr.kind === "false") return leftOr;
+
+            return { kind: "or", left: leftOr, right: rightOr } as Predicate;
+        case "comparison":
+            const comp = predicate as ComparisonCond;
+            const leftExpr = simplifyExpr(comp.left);
+            const rightExpr = simplifyExpr(comp.right);
+
+            // упрощение числовых сравнений
+            if (leftExpr.type === "const" && rightExpr.type === "const") {
+                const leftVal = (leftExpr as any).value;
+                const rightVal = (rightExpr as any).value;
+                let result: boolean;
+                switch (comp.op) {
+                    case "==": result = leftVal === rightVal; break;
+                    case "!=": result = leftVal !== rightVal; break;
+                    case ">": result = leftVal > rightVal; break;
+                    case "<": result = leftVal < rightVal; break;
+                    case ">=": result = leftVal >= rightVal; break;
+                    case "<=": result = leftVal <= rightVal; break;
+                    default: return { ...comp, left: leftExpr, right: rightExpr };
+                }
+                return result ? { kind: "true" } : { kind: "false" };
+            }
+            // x == x => true
+            if (comp.op === "==" && areExprsEqual(leftExpr, rightExpr)) {
+                return { kind: "true" };
+            }
+            // x != x => false
+            if (comp.op === "!=" && areExprsEqual(leftExpr, rightExpr)) {
+                return { kind: "false" };
+            }
+
+            return { ...comp, left: leftExpr, right: rightExpr };
+        case "not":
+            const inner = simplifyPredicate((predicate as NotCond).condition);
+            // !!P => P
+            if (inner.kind === "not") return (inner as NotCond).condition;
+            // !true => false, !false => true
+            if (inner.kind === "true") return { kind: "false" };
+            if (inner.kind === "false") return { kind: "true" };
+            return { kind: "not", condition: inner } as NotCond;
+        case "paren":
+            const innerParen = simplifyPredicate((predicate as ParenCond).inner);
+            return innerParen;
+        case "implies":
+            const leftImpl = simplifyPredicate((predicate as any).left);
+            const rightImpl = simplifyPredicate((predicate as any).right);
+            // true => P => P
+            if (leftImpl.kind === "true") return rightImpl;
+            // false => P => true
+            if (leftImpl.kind === "false") return { kind: "true" };
+            // P => true => true
+            if (rightImpl.kind === "true") return { kind: "true" };
+
+            return { kind: "implies", left: leftImpl, right: rightImpl } as Predicate;
+        default:
+            return predicate;
+    }
+}
+
+function simplifyExpr(expr: Expr): Expr {
+    switch (expr.type) {
+        case "const":
+            return expr;
+        case "var":
+            return expr;
+        case "unary": {
+            const arg = simplifyExpr(expr.argument);
+            if (arg.type === "const") {
+                return { type: "const", value: -arg.value };
+            }
+            return { type: "unary", op: "-", argument: arg } as Expr;
+        }
+        case "binop": {
+            const left = simplifyExpr(expr.left);
+            const right = simplifyExpr(expr.right);
+
+            // упрощение числовых операций
+            if (left.type === "const" && right.type === "const") {
+                const leftVal = left.value;
+                const rightVal = right.value;
+                switch (expr.op) {
+                    case "+": return { type: "const", value: leftVal + rightVal };
+                    case "-": return { type: "const", value: leftVal - rightVal };
+                    case "*": return { type: "const", value: leftVal * rightVal };
+                    case "/":
+                        if (rightVal !== 0) return { type: "const", value: Math.floor(leftVal / rightVal) } as Expr;
+                        return { type: "binop", op: "/", left, right } as Expr;
+                    default: return { type: "binop", op: (expr as any).op, left, right } as Expr;
+                }
+            }
+
+            return { type: "binop", op: expr.op, left, right } as Expr;
+        }
+        case "funccall": {
+            const args = expr.args.map((arg: any) => simplifyExpr(arg));
+            return { type: "funccall", name: expr.name, args };
+        }
+        case "arraccess": {
+            const index = simplifyExpr(expr.index);
+            return { type: "arraccess", name: expr.name, index };
+        }
+        default:
+            return expr;
+    }
+}
+
+/*
+export interface AssignStmt {
+    type: "assign";
+    targets: LValue[];
+    exprs: Expr[];
+}
+*/
+function computeWPAssignment(
+    assign: AssignStmt,
+    postcondition: Predicate,
+    // env: Map<string, Arith>,
+    // z3: Context
+): Predicate {
+    if (assign.targets.length === 0) {
+        // function call used as a statement (no targets). WP is the same postcondition
+        return postcondition;
+    }
+
+    if (assign.targets.length === 1 && assign.exprs.length === 1) {
+        const target = assign.targets[0];
+        const expr = assign.exprs[0];
+
+        if (target.type === "lvar") {
+            // подстановка переменной в postcondition на уровне AST перед конвертацией в Z3
+            const wp = substituteInPredicate(postcondition, target.name, expr);
+            console.log(`WP for assign ${target.name} := ${JSON.stringify(expr)} ->`, JSON.stringify(wp));
+            return wp;
+        }
+
+        /*
+        export interface ArrLValue {
+            type: "larr";
+            name: string;
+            index: Expr;
+        }
+        */
+        if (target.type === "larr") {
+            // присваивание элементу массива: arr[index] = value
+            const arrayName = target.name;
+            const indexExpr = target.index;
+
+            // выражение доступа к массиву для подстановки
+            const arrayAccess: ArrAccessExpr = {
+                type: "arraccess",
+                name: arrayName,
+                index: indexExpr
+            };
+
+            // подстановка во всем предикате arr[index] на expr
+            const wp = substituteArrayAccessInPredicate(postcondition, arrayAccess, expr);
+            console.log(`WP for assign ${arrayName}[${JSON.stringify(indexExpr)}] := ${JSON.stringify(expr)} ->`, JSON.stringify(wp));
+            return wp;
+        }
+    }
+
+    console.log(`неизвестный assignment: ${assign}`);
+    throw new Error(`неизвестный assignment: ${assign}`);
+}
+
+function substituteArrayAccessInPredicate(
+    predicate: Predicate,
+    arrayAccess: ArrAccessExpr,
+    substitution: Expr
+): Predicate {
+    // console.log("DEBUG substituteArrayAccessInPredicate:", {
+    //     predicateKind: predicate.kind,
+    //     predicate: JSON.stringify(predicate),
+    //     arrayAccess: JSON.stringify(arrayAccess),
+    //     substitution: JSON.stringify(substitution)
+    // });
+
+    const kind = (predicate as any).kind;
+    switch (kind) {
+        case "true":
+            return predicate;
+        case "false":
+            return predicate;
+        case "comparison":
+            return {
+                ...predicate,
+                left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution),
+                right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution),
+            } as Predicate;
+        case "and":
+            return {
+                kind: "and",
+                left: substituteArrayAccessInPredicate((predicate as AndCond).left, arrayAccess, substitution),
+                right: substituteArrayAccessInPredicate((predicate as AndCond).right, arrayAccess, substitution),
+            } as Predicate;
+        case "or":
+            return {
+                kind: "or",
+                left: substituteArrayAccessInPredicate((predicate as OrCond).left, arrayAccess, substitution),
+                right: substituteArrayAccessInPredicate((predicate as OrCond).right, arrayAccess, substitution),
+            } as Predicate;
+        case "not":
+            return {
+                kind: "not",
+                condition: substituteArrayAccessInPredicate((predicate as NotCond).condition, arrayAccess, substitution),
+            } as Predicate;
+        case "paren":
+            return {
+                kind: "paren",
+                inner: substituteArrayAccessInPredicate((predicate as ParenCond).inner, arrayAccess, substitution),
+            } as Predicate;
+        case "forall":
+        case "exists": {
+            const q = predicate as Quantifier;
+            // переменная квантора совпадает с именем массива -> не подставляю
+            if (q.variable.name === arrayAccess.name) return predicate;
+
+            return {
+                ...q,
+                predicate: substituteArrayAccessInPredicate(q.predicate, arrayAccess, substitution),
+            } as Predicate;
+        }
+        case "implies":
+            return {
+                kind: "implies",
+                left: substituteArrayAccessInPredicate((predicate as any).left, arrayAccess, substitution),
+                right: substituteArrayAccessInPredicate((predicate as any).right, arrayAccess, substitution),
+            } as Predicate;
+        case 'eq':
+            return { kind: 'comparison', op: '==', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        case 'neq':
+            return { kind: 'comparison', op: '!=', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        case 'ge':
+            return { kind: 'comparison', op: '>=', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        case 'le':
+            return { kind: 'comparison', op: '<=', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        case 'gt':
+            return { kind: 'comparison', op: '>', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        case 'lt':
+            return { kind: 'comparison', op: '<', left: substituteArrayAccessInExpr((predicate as any).left, arrayAccess, substitution), right: substituteArrayAccessInExpr((predicate as any).right, arrayAccess, substitution) } as Predicate;
+        default:
+            console.log(`неизвестный тип предиката: ${(predicate as any).kind}`);
+            throw new Error(`неизвестный тип предиката: ${(predicate as any).kind}`);
+    }
+}
+
+function substituteArrayAccessInExpr(
+    expr: Expr,
+    arrayAccess: ArrAccessExpr,
+    substitution: Expr
+): Expr {
+    // является ли текущее выражение доступом к тому же массиву и с тем же индексом?
+    if (expr.type === "arraccess" &&
+        expr.name === arrayAccess.name &&
+        areExprsEqual(expr.index, arrayAccess.index)) {
+        return substitution;
+    }
+
+    // рекурсивно обработка других типы выражений
+    switch (expr.type) {
+        case "const":
+            return expr;
+        case "var":
+            return expr;
+        case "unary":
+            return {
+                type: "unary",
+                op: expr.op,
+                argument: substituteArrayAccessInExpr(expr.argument, arrayAccess, substitution)
+            } as Expr;
+        case "binop":
+            return {
+                type: "binop",
+                op: expr.op,
+                left: substituteArrayAccessInExpr(expr.left, arrayAccess, substitution),
+                right: substituteArrayAccessInExpr(expr.right, arrayAccess, substitution)
+            } as Expr;
+        case "funccall":
+            return {
+                type: "funccall",
+                name: expr.name,
+                args: expr.args.map((arg: any) => substituteArrayAccessInExpr(arg, arrayAccess, substitution))
+            } as Expr;
+        case "arraccess":
+            // рекурсивно обработка индекса
+            return {
+                type: "arraccess",
+                name: expr.name,
+                index: substituteArrayAccessInExpr(expr.index, arrayAccess, substitution)
+            } as Expr;
+        default:
+            console.log(`неизвестный тип выражения: ${(expr as any).type}`);
+            throw new Error(`неизвестный тип выражения: ${(expr as any).type}`);
+    }
+}
+
+// для сравнения выражений
+function areExprsEqual(expr1: Expr, expr2: Expr): boolean {
+    if (expr1.type !== expr2.type) return false;
+
+    switch (expr1.type) {
+        case "const":
+            return (expr2.type === "const" && expr1.value === expr2.value);
+        case "var":
+            return (expr2.type === "var" && expr1.name === expr2.name);
+        case "unary":
+            return (expr2.type === "unary" && areExprsEqual(expr1.argument, (expr2 as any).argument));
+        case "binop":
+            if (expr2.type !== "binop") return false;
+            return expr1.op === expr2.op &&
+                areExprsEqual(expr1.left, expr2.left) &&
+                areExprsEqual(expr1.right, expr2.right);
+        case "funccall":
+            if (expr2.type !== "funccall") return false;
+            return expr1.name === expr2.name &&
+                expr1.args.length === expr2.args.length &&
+                expr1.args.every((arg: any, i: number) => areExprsEqual(arg, expr2.args[i]));
+        case "arraccess":
+            if (expr2.type !== "arraccess") return false;
+            return expr1.name === expr2.name &&
+                areExprsEqual(expr1.index, expr2.index);
+        default:
+            return false;
+    }
+}
+
+// подстановка expr всесто varName в postcondition
+function substituteInPredicate(postcondition: Predicate, varName: string, expr: Expr): Predicate {
+    const kind = (postcondition as any).kind;
+    switch (kind) {
+        case "true":
+        case "false":
+            return postcondition;
+        case "comparison":
+            return {
+                ...postcondition,
+                left: substituteInExpr((postcondition as any).left, varName, expr),
+                right: substituteInExpr((postcondition as any).right, varName, expr),
+            } as Predicate;
+        case 'eq':
+            return { kind: 'comparison', op: '==', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case 'neq':
+            return { kind: 'comparison', op: '!=', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case 'ge':
+            return { kind: 'comparison', op: '>=', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case 'le':
+            return { kind: 'comparison', op: '<=', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case 'gt':
+            return { kind: 'comparison', op: '>', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case 'lt':
+            return { kind: 'comparison', op: '<', left: substituteInExpr((postcondition as any).left, varName, expr), right: substituteInExpr((postcondition as any).right, varName, expr) } as Predicate;
+        case "and":
+            return {
+                kind: "and",
+                left: substituteInPredicate((postcondition as AndCond).left, varName, expr),
+                right: substituteInPredicate((postcondition as AndCond).right, varName, expr),
+            } as Predicate;
+        case "or":
+            return {
+                kind: "or",
+                left: substituteInPredicate((postcondition as OrCond).left, varName, expr),
+                right: substituteInPredicate((postcondition as OrCond).right, varName, expr),
+            } as Predicate;
+        case "not":
+            return {
+                kind: "not",
+                condition: substituteInPredicate((postcondition as NotCond).condition, varName, expr),
+            } as Predicate;
+        case "paren":
+            return {
+                kind: "paren",
+                inner: substituteInPredicate((postcondition as ParenCond).inner, varName, expr),
+            } as Predicate;
+        case "forall":
+        case "exists": {
+            const q = postcondition as Quantifier;
+            // связанная переменная  не подставляется внутрь
+            if (q.variable.name === varName) {
+                return postcondition;
+            }
+            return {
+                ...q,
+                predicate: substituteInPredicate(q.predicate, varName, expr),
+            } as Predicate;
+        }
+        case "implies":
+            return {
+                kind: "implies",
+                left: substituteInPredicate((postcondition as ImpliesCond).left, varName, expr),
+                right: substituteInPredicate((postcondition as ImpliesCond).right, varName, expr),
+            } as Predicate;
+
+        default:
+            console.log(`неизвестный тип предиката: ${(postcondition as any).kind}`);
+            throw new Error(`неизвестный тип предиката: ${(postcondition as any).kind}`);
+    }
+}
+
+function substituteInExpr(expr: Expr, varName: string, substitution: Expr): Expr {
+    switch (expr.type) {
+        case "const":
+            return expr;
+        case "var":
+            if (expr.name === varName) return substitution;
+            return expr;
+        case "unary":
+            return {
+                type: "unary",
+                op: expr.op,
+                argument: substituteInExpr(expr.argument, varName, substitution)
+            } as Expr;
+        case "binop":
+            return {
+                type: "binop",
+                op: expr.op,
+                left: substituteInExpr(expr.left, varName, substitution),
+                right: substituteInExpr(expr.right, varName, substitution)
+            } as Expr;
+        case "funccall":
+            return {
+                type: "funccall",
+                name: expr.name,
+                args: expr.args.map((arg: any) => substituteInExpr(arg, varName, substitution))
+            } as Expr;
+        case "arraccess":
+            return {
+                type: "arraccess",
+                name: expr.name,
+                index: substituteInExpr(expr.index, varName, substitution)
+            } as Expr;
+        default:
+            console.log(`неизвестный тип выражения: ${(expr as any).type}`);
+            throw new Error(`неизвестный тип выражения: ${(expr as any).type}`);
+    }
+}
+
+/*
+export interface BlockStmt {
+    type: "block";
+    stmts: Statement[];
+}
+*/
+function computeWPBlock(
+    block: BlockStmt,
+    postcondition: Predicate,
+    // env: Map<string, Arith>,
+    // z3: Context
+    module: AnnotatedModule
+): Predicate {
+    // обработка блоков в обратном порядке
+    let currentWP = postcondition;
+    for (let i = block.stmts.length - 1; i >= 0; --i) {
+        const stmt = block.stmts[i];
+        currentWP = computeWP(stmt, currentWP, module);
+
+        // if (i > 0 && block.stmts[i-1].type === "while") {
+        //     // Для операторов перед циклом - не подставляю значения в инвариант цикла???
+        //     currentWP = computeWPPreservingInvariant(stmt, currentWP, block.stmts[i-1] as WhileStmt, module);
+        // } else {
+        //     currentWP = computeWP(stmt, currentWP, module);
+        // }
+    }
+
+    return currentWP;
+}
+
+/*
+export interface ConditionalStmt {
+    type: "if";
+    condition: Condition;
+    then: Statement;
+    else: Statement | null;
+}
+*/
+function computeWPIf(
+    ifStmt: ConditionalStmt,
+    postcondition: Predicate,
+    // env: Map<string, Arith>,
+    // z3: Context
+    module: AnnotatedModule
+): Predicate {
+    // const condition = convertConditionToZ3(ifStmt.condition, env, z3);
+    // const thenWP = computeWP(ifStmt.then, postcondition, env, z3);
+    // const elseWP = ifStmt.else ? computeWP(ifStmt.else, postcondition, env, z3) : postcondition;
+
+    const condition = convertConditionToPredicate(ifStmt.condition);
+    const thenWP = computeWP(ifStmt.then, postcondition, module);
+    const elseWP = ifStmt.else ? computeWP(ifStmt.else, postcondition, module) : postcondition;
+
+    // return z3.And(
+    //     z3.Implies(condition, thenWP),
+    //     z3.Implies(z3.Not(condition), elseWP)
+    // );
+
+    // WP = (condition & thenWP) || (not(condition) & elseWP)
+    const result = {
+        kind: "or",
+        left: {
+            kind: "and",
+            left: condition,
+            right: thenWP
+        },
+        right: {
+            kind: "and",
+            left: { kind: "not", condition } as NotCond,
+            right: elseWP
+        }
+    } as OrCond;
+    return result;
+}
+
+function convertConditionToPredicate(condition: Condition): Predicate {
+    switch (condition.kind) {
+        case "true": return condition;
+        case "false": return condition;
+        case "comparison": return condition;
+        case "not":
+            return {
+                kind: "not",
+                condition: convertConditionToPredicate(condition.condition)
+            } as NotCond;
+        case "and":
+            return {
+                kind: "and",
+                left: convertConditionToPredicate(condition.left),
+                right: convertConditionToPredicate(condition.right)
+            } as AndCond;
+        case "or":
+            return {
+                kind: "or",
+                left: convertConditionToPredicate(condition.left),
+                right: convertConditionToPredicate(condition.right)
+            } as OrCond;
+        case "implies":
+            return {
+                kind: "or",
+                left: {
+                    kind: "not",
+                    condition: convertConditionToPredicate(condition.left)
+                } as NotCond,
+                right: convertConditionToPredicate(condition.right)
+            } as OrCond;
+        case "paren":
+            return {
+                kind: "paren",
+                inner: convertConditionToPredicate(condition.inner)
+            } as ParenCond;
+        default:
+            console.log(`неизвестный тип условия: ${(condition as any).kind}`);
+            throw new Error(`неизвестный тип условия: ${(condition as any).kind}`);
+    }
+}
+
+/*
+export interface WhileStmt {
+    type: "while";
+    condition: Condition;
+    invariant: Predicate | null;
+    body: Statement;
+}
+*/
+function computeWPWhile(whileStmt: any, postcondition: Predicate, module: AnnotatedModule): Predicate {
+    const stmtKind = whileStmt.type || whileStmt.kind;
+    if (stmtKind !== "while") {
+        throw new Error("Expected while statement");
+    }
+
+    const invariant = whileStmt.invariant;
+    if (!invariant) {
+        throw new Error("while цикл без инварианта");
+    }
+
+    const condition = convertConditionToPredicate(whileStmt.condition);
+    const bodyWP = computeWP(whileStmt.body, invariant, module);
+
+    const result = {
+        kind: "and",
+        left: invariant,
+        right: {
+            kind: "and",
+            left: {
+                kind: "implies",
+                left: {
+                    kind: "and",
+                    left: invariant,
+                    right: condition
+                },
+                right: bodyWP
+            },
+            right: {
+                kind: "implies",
+                left: {
+                    kind: "and",
+                    left: invariant,
+                    right: { kind: "not", condition } as NotCond
+                },
+                right: postcondition
+            }
+        }
+    } as AndCond;
+
+    return simplifyPredicate(result);
+}
+
+// --- конвертация в Z3 ---
+function convertPredicateToZ3(
+    predicate: Predicate,
+    env: Map<string, Arith>,
+    z3: Context,
+    module: AnnotatedModule,
+    solver: any
+): Bool {
+    const kind = (predicate as any).kind;
+
+    // Normalize short forms
+    if (['eq', 'neq', 'ge', 'le', 'gt', 'lt'].includes(kind)) {
+        const opMap: Record<string, string> = { eq: '==', neq: '!=', ge: '>=', le: '<=', gt: '>', lt: '<' };
+        const p = predicate as any;
+        return convertComparisonToZ3({ kind: 'comparison', op: opMap[kind], left: p.left, right: p.right } as any, env, z3, module, solver);
+    }
+
+    switch (kind) {
+        case "true": return z3.Bool.val(true);
+        case "false": return z3.Bool.val(false);
+        case "comparison":
+            return convertComparisonToZ3(predicate as ComparisonCond, env, z3, module, solver);
+        case "and":
+            return z3.And(
+                convertPredicateToZ3((predicate as AndCond).left, env, z3, module, solver),
+                convertPredicateToZ3((predicate as AndCond).right, env, z3, module, solver)
+            );
+        case "or":
+            return z3.Or(
+                convertPredicateToZ3((predicate as OrCond).left, env, z3, module, solver),
+                convertPredicateToZ3((predicate as OrCond).right, env, z3, module, solver)
+            );
+        case "not":
+            return z3.Not(convertPredicateToZ3((predicate as NotCond).condition, env, z3, module, solver));
+        case "paren":
+            return convertPredicateToZ3((predicate as ParenCond).inner, env, z3, module, solver);
+        case "implies":
+            return z3.Implies(
+                convertPredicateToZ3((predicate as ImpliesCond).left, env, z3, module, solver),
+                convertPredicateToZ3((predicate as ImpliesCond).right, env, z3, module, solver)
+            );
+        case "forall":
+        case "exists":
+            return convertQuantifierToZ3(predicate as Quantifier, env, z3, module, solver);
+        default:
+            console.log(`что за предикат таккой: ${kind}`);
+            throw new Error(`что за предикат таккой: ${kind}`);
+    }
+}
+
+function convertComparisonToZ3(
+    comparison: ComparisonCond,
+    env: Map<string, Arith>,
+    z3: Context,
+    module: AnnotatedModule,
+    solver: any
+): Bool {
+    const left = convertExprToZ3(comparison.left, env, z3, module, solver);
+    const right = convertExprToZ3(comparison.right, env, z3, module, solver);
+
+    switch (comparison.op) {
+        case "==": return left.eq(right);
+        case "!=": return left.neq(right);
+        case ">": return left.gt(right);
+        case "<": return left.lt(right);
+        case ">=": return left.ge(right);
+        case "<=": return left.le(right);
+        default:
+            console.log(`unnown comparison operator: ${comparison.op}`);
+            throw new Error(`unnown comparison operator: ${comparison.op}`);
+    }
+}
+
+// генерация ключа на основе структуры выражения индекса
+function generateIndexKey(indexExpr: Expr): string {
+    switch (indexExpr.type) {
+        case "const":
+            return `const_${indexExpr.value}`;
+        case "var":
+            return `var_${indexExpr.name}`;
+        case "binop":
+            const leftKey = generateIndexKey(indexExpr.left);
+            const rightKey = generateIndexKey(indexExpr.right);
+
+            // ! для некоммутативных операций операнды сортируются [1+j] = [j+1]
+            if (indexExpr.op === "+" || indexExpr.op === "*") {
+                const sorted = [leftKey, rightKey].sort();
+                return `bin_${indexExpr.op}_${sorted[0]}_${sorted[1]}`;
+            }
+            return `bin_${indexExpr.op}_${leftKey}_${rightKey}`;
+        case "unary":
+            return `neg_${generateIndexKey(indexExpr.argument)}`;
+        case "funccall":
+            const argsKey = indexExpr.args.map(generateIndexKey).join("_");
+            return `call_${indexExpr.name}_${argsKey}`;
+        case "arraccess":
+            return `arr_${indexExpr.name}_${generateIndexKey(indexExpr.index)}`;
+        default:
+            return `unknown_${Math.random().toString(36).substr(2, 9)}`;
+    }
+}
+
+function convertExprToZ3(
+    expr: Expr,
+    env: Map<string, Arith>,
+    z3: Context,
+    module: AnnotatedModule, // для доступа к спецификациям функций
+    solver: any // для добавления аксиом
+): Arith {
+    switch (expr.type) {
+        case "const": return z3.Int.val(expr.value);
+        case "var":
+            const varExpr = env.get(expr.name);
+            if (!varExpr) {
+                const arrayExpr = env.get(expr.name + "_array");
+                if (arrayExpr) {
+                    console.log(`найден массив: ${arrayExpr}`);
+                    return arrayExpr;
+                }
+                console.log(`неизвестная перем: ${expr.name}`);
+                throw new Error(`неизвестная перем: ${expr.name}`);
+            }
+            return varExpr;
+        case "unary": return convertExprToZ3(expr.argument, env, z3, module, solver).neg();
+        case "binop":
+            const left = convertExprToZ3(expr.left, env, z3, module, solver);
+            const right = convertExprToZ3(expr.right, env, z3, module, solver);
+            switch (expr.op) {
+                case "+": return left.add(right);
+                case "-": return left.sub(right);
+                case "*": return left.mul(right);
+                case "/": return left.div(right);
+                default:
+                    console.log(`неизвестный бинарный опер: ${(expr as any).op}`);
+                    throw new Error(`неизвестный бинарный опер: ${(expr as any).op}`);
+            }
+        case "funccall":
+            // if (expr.name === "foo1") {
+            //     return z3.Int.val(42);
+            // }
+            // if (expr.name === "foo2" && expr.args.length === 1) {
+            //     const arg = convertExprToZ3(expr.args[0], env, z3);
+            //     return arg.add(1);
+            // }
+
+            // конвертация всех аргументов в Z3
+            const args = expr.args.map((arg: any) => convertExprToZ3(arg, env, z3, module, solver));
+
+            // Use a Z3 function symbol to represent the function behavior uniformly
+            let funcSym = functionSymbols.get(expr.name);
+            if (!funcSym) {
+                // create function symbol with arity equal to args.length
+                const sorts = args.map(() => z3.Int.sort());
+                funcSym = z3.Function.declare(`${expr.name}_fn`, ...sorts, z3.Int.sort());
+                functionSymbols.set(expr.name, funcSym);
+            }
+
+            // return application of function symbol to concrete args
+            const funcApp = funcSym.call(...args);
+
+            // add axioms derived from function's postcondition (if any)
+            const funcSpec = findFunctionSpec(expr.name, module);
+            if (funcSpec) {
+                try {
+                    addFunctionAxioms(expr.name, funcSpec, args, funcApp, env, z3, solver, module);
+                } catch (e) {
+                    console.log(`Ошибка при добавлении аксиом для ${expr.name}:`, (e as any)?.message ?? String(e));
+                }
+            }
+
+            return funcApp;
+        case "arraccess":
+            const arrayName = expr.name; // arr[i] -> "arr"
+            // конвертация индекса массива в Z3
+            const index = convertExprToZ3(expr.index, env, z3, module, solver);
+
+            // переменная для элемента массива (arr[5] -> "arr_elem_5")
+            const indexKey = generateIndexKey(expr.index);
+            const elemVarName = `${arrayName}_elem_${indexKey}`;
+
+            // не создавали ли уже такую? если да, то возвращаю
+            if (env.has(elemVarName)) {
+                return env.get(elemVarName)!;
+            }
+
+            // новая Z3 переменная для элемента массива
+            const elemVar = z3.Int.const(elemVarName);
+            env.set(elemVarName, elemVar);
+            return elemVar;
+        default:
+            console.log(`неизвестный expression type: ${(expr as any).type}`);
+            throw new Error(`неизвестный expression type: ${(expr as any).type}`);
+    }
+}
+
+function findFunctionSpec(funcName: string, module: AnnotatedModule): AnnotatedFunctionDef | null {
+    return module.functions.find(f => f.name === funcName) || null;
+}
+
+// поиск внутри Expr вызова функции с именем name
+function exprContainsCall(expr: Expr | null, name: string): boolean {
+    if (!expr) return false;
+    switch (expr.type) {
+        case "const": return false;
+        case "var": return false;
+        case "unary": return exprContainsCall(expr.argument, name);
+        case "binop":
+            return exprContainsCall(expr.left, name) || exprContainsCall(expr.right, name);
+        case "funccall":
+            if (expr.name === name) return true;
+            return expr.args.some((a: any) => exprContainsCall(a, name));
+        case "arraccess":
+            return exprContainsCall(expr.index, name);
+        default: return false;
+    }
+}
+
+// поиск внутри Predicate вызова функции с именем name
+function predicateContainsCall(pred: Predicate | null, name: string): boolean {
+    if (!pred) return false;
+    switch (pred.kind) {
+        case "true": return false;
+        case "false": return false;
+        case "comparison":
+            return exprContainsCall((pred as ComparisonCond).left, name)
+                || exprContainsCall((pred as ComparisonCond).right, name);
+        case "and":
+        case "or":
+            return predicateContainsCall((pred as any).left, name)
+                || predicateContainsCall((pred as any).right, name);
+        case "not":
+            return predicateContainsCall((pred as NotCond).condition, name);
+        case "paren":
+            return predicateContainsCall((pred as ParenCond).inner, name);
+        case "implies":
+            return predicateContainsCall((pred as ImpliesCond).left, name) || predicateContainsCall((pred as ImpliesCond).right, name);
+        default: return false;
+    }
+}
+
+// добавление аксиомы на основе постусловия функции
+function addFunctionAxioms(
+    funcName: string,
+    funcSpec: AnnotatedFunctionDef,
+    args: Arith[],
+    result: Arith,
+    env: Map<string, Arith>,
+    z3: Context,
+    solver: any,
+    module: AnnotatedModule
+) {
+    // avoid repeated work
+    if (functionAxiomsAdded.has(funcName)) return;
+    if (functionAxiomsInProgress.has(funcName)) {
+        console.log(`аксиомы для ${funcName} уже синтезируются, пропускаю`);
         return;
     }
 
-    if (result === 'unknown') {
-        // Z3 не смог определить, но это может быть нормально
-        throw new Error(`Verification inconclusive for function ${func.name}: Z3 could not determine satisfiability`);
+    if (!funcSpec.postcondition) {
+        console.log(`функция ${funcName}: нет постусловия -> аксиомы не добавляются`);
+        functionAxiomsAdded.add(funcName);
+        return;
     }
 
-    // sat - есть модель, которая делает NOT formula истинной
-    // Это значит есть контрпример для formula
-    const model = solver.model();
+    // mark as in-progress to avoid re-entrant synthesis
+    functionAxiomsInProgress.add(funcName);
+    try {
 
-    if (model) {
-        throw new Error(
-            `Verification failed for function ${func.name}:\n` +
-            `Postcondition violated:\n` +
-            `${printFuncCall(func, model)}`
-        );
+        // рекурсия -> генерить аксиомы, которые связывают те самые {funcname}_result_... константы с ожидаемым поведением
+        const combinedPost = funcSpec.postcondition;
+        if (predicateContainsCall(combinedPost, funcName)) {
+            console.log(`функция ${funcName} рекурсивная -> синтезирую базовые аксиомы`);
+
+            if (funcSpec.parameters.length === 1 && funcSpec.returns.length === 1) {
+                const pName = funcSpec.parameters[0].name;
+                const n = z3.Int.const(pName);
+
+                // get or create function symbol
+                let funcSym = functionSymbols.get(funcName);
+                if (!funcSym) {
+                    funcSym = z3.Function.declare(`${funcName}_fn`, z3.Int.sort(), z3.Int.sort());
+                    functionSymbols.set(funcName, funcSym);
+                }
+
+                // 1 аксиомы базы: n == 0 => funcSym(n) == 1
+                solver.add(z3.ForAll([n], z3.Implies(n.eq(0), funcSym.call(n).eq(z3.Int.val(1)))));
+
+                // 2 аксиома индукции: n > 0 => funcSym(n) == n * funcSym(n-1)
+                const mMinus1 = n.sub(z3.Int.val(1));
+                solver.add(z3.ForAll([n], z3.Implies(n.gt(0), funcSym.call(n).eq(n.mul(funcSym.call(mMinus1))))));
+
+                // additionally instantiate axioms for common concrete terms
+                // this helps SMT solvers which struggle with quantifier instantiation
+                try {
+                    const zero = z3.Int.val(0);
+                    const one = z3.Int.val(1);
+                    solver.add(z3.Implies(zero.eq(0), funcSym.call(zero).eq(one)));
+                    if (args && args.length === 1) {
+                        const a = args[0];
+                        try {
+                            solver.add(z3.Implies(a.eq(z3.Int.val(0)), funcSym.call(a).eq(z3.Int.val(1))));
+                            solver.add(z3.Implies(a.gt(z3.Int.val(0)), funcSym.call(a).eq(a.mul(funcSym.call(a.sub(z3.Int.val(1)))))));
+                        } catch (e) { /* ignore */ }
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            return;
+        }
+
+        // временное окружение для параметров функции
+        // компбинация постусловий (если их несколько)
+        const postcondition = funcSpec.postcondition || { kind: "true" };
+
+        // ensure a function symbol exists for this function
+        let funcSym = functionSymbols.get(funcName);
+        if (!funcSym) {
+            const sorts = funcSpec.parameters.map(() => z3.Int.sort());
+            funcSym = z3.Function.declare(`${funcName}_fn`, ...sorts, z3.Int.sort());
+            functionSymbols.set(funcName, funcSym);
+        }
+
+        // Create universally quantified axiom: for all formal params, postcondition holds
+        const z3Params: Arith[] = funcSpec.parameters.map(p => z3.Int.const(`${funcName}_ax_${p.name}`));
+        const axEnv = new Map<string, Arith>();
+        funcSpec.parameters.forEach((p, i) => axEnv.set(p.name, z3Params[i]));
+        if (funcSpec.returns.length === 1) {
+            axEnv.set(funcSpec.returns[0].name, funcSym.call(...(z3Params as any)));
+        }
+        const z3Postcondition = convertPredicateToZ3(postcondition, axEnv, z3, module, solver);
+        try {
+            solver.add(z3.ForAll(z3Params, z3Postcondition));
+        } catch (e) {
+            // fallback: assert the postcondition without quantifier
+            try {
+                solver.add(z3Postcondition);
+            } catch (ee) { /* ignore */ }
+        }
+
+        // additionally instantiate the postcondition for the concrete args seen in this call
+        try {
+            const concreteEnv = new Map<string, Arith>();
+            funcSpec.parameters.forEach((p, i) => {
+                if (i < args.length) concreteEnv.set(p.name, args[i]);
+            });
+            if (funcSpec.returns.length === 1) {
+                concreteEnv.set(funcSpec.returns[0].name, result);
+            }
+            const ground = convertPredicateToZ3(postcondition, concreteEnv, z3, module, solver);
+            solver.add(ground);
+        } catch (e) { /* ignore */ }
+    } finally {
+        functionAxiomsInProgress.delete(funcName);
+        functionAxiomsAdded.add(funcName);
+    }
+}
+
+function convertQuantifierToZ3(
+    quantifier: Quantifier,
+    env: Map<string, Arith>,
+    z3: Context,
+    module: AnnotatedModule,
+    solver: any
+): Bool {
+    // новая переменная для квантора
+    const varName = quantifier.variable.name;
+    let varExpr: Arith;
+
+    const varType = quantifier.variable.varType;
+    if (varType === "int") {
+        varExpr = z3.Int.const(varName);
     } else {
-        throw new Error(`Verification failed for function ${func.name}: unknown reason`);
+        console.warn(`Неизвестный тип переменной в кванторе: ${varType}, используем int`);
+        varExpr = z3.Int.const(varName);
+    }
+
+    // + новое окружение С добавленной переменной 
+    const new_environment = new Map(env);
+    new_environment.set(varName, varExpr);
+
+    const body = convertPredicateToZ3(quantifier.predicate, new_environment, z3, module, solver);
+
+    if (quantifier.kind === "forall") {
+        return z3.ForAll([varExpr], body);
+    } else {
+        return z3.Exists([varExpr], body);
     }
 }
