@@ -1,15 +1,7 @@
-sqrt(z: int) 
-    requires z >= 1
-    returns x: int
-    ensures x*x <= z and (x+1)*(x+1) > z
-    uses y: int
+sqareRoot(n: int)
+    returns r: int
+    requires n >= 0
+    ensures r >= 0 and r*r <= n and (r+1)*(r+1) > n
 {
-    x = 1;
-    y = 1;
-    while(y <= z) invariant(y==x*x and (x-1)*(x-1) <= z)
-    {
-        y = y + 2*x + 1;
-        x = x + 1;
-    }
-//    x = x - 1;
+    r = -1;
 }
