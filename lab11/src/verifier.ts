@@ -1262,7 +1262,7 @@ function addFunctionAxioms(
         }
         const z3Postcondition = convertPredicateToZ3(postcondition, axEnv, z3, module, solver);
         try {
-            solver.add(z3.ForAll(z3Params, z3Postcondition));
+            solver.add(z3.ForAll(z3Params as any, z3Postcondition));
         } catch (e) {
             // fallback: assert the postcondition without quantifier
             try {
