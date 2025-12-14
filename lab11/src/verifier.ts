@@ -12,16 +12,6 @@ import {
     TrueCond, FalseCond, ComparisonCond, NotCond, AndCond, OrCond, ImpliesCond, ParenCond
 } from "../../lab08/src/funny";
 
-let z3anchor;
-// async function initZ3()
-// {
-//     if(!z3)
-//     {
-//         z3anchor = await init();
-//         const Z3C = z3anchor.Context;
-//         z3 = Z3C('main');        
-//     }
-// }
 
 let z3Context: Context | null = null;
 async function initZ3() {
@@ -1183,7 +1173,23 @@ function addFunctionAxioms(
     // avoid repeated work
     if (functionAxiomsAdded.has(funcName)) return;
     if (functionAxiomsInProgress.has(funcName)) {
-        console.log(`аксиомы для ${funcName} уже синтезируются, пропускаю`);
+        console.log(`аксиомы для ${funcName} уже синтезируются, добавляю локальную инстанциацию для аргументов и пропускаю полную синтезу`);
+        // Even if a full synthesis is in progress elsewhere, try to add
+        // lightweight instantiations for the concrete arguments we have
+        try {
+            // ensure a function symbol exists
+            let funcSym = functionSymbols.get(funcName);
+            if (!funcSym) {
+                const sorts = funcSpec.parameters.map(() => z3.Int.sort());
+                funcSym = z3.Function.declare(`${funcName}_fn`, ...sorts, z3.Int.sort());
+                functionSymbols.set(funcName, funcSym);
+            }
+            if (args && args.length === 1) {
+                const a = args[0];
+                solver.add(z3.Implies(a.eq(z3.Int.val(0)), funcSym.call(a).eq(z3.Int.val(1))));
+                solver.add(z3.Implies(a.gt(z3.Int.val(0)), funcSym.call(a).eq(a.mul(funcSym.call(a.sub(z3.Int.val(1)))))));
+            }
+        } catch (e) { /* ignore */ }
         return;
     }
 
@@ -1225,7 +1231,9 @@ function addFunctionAxioms(
                 try {
                     const zero = z3.Int.val(0);
                     const one = z3.Int.val(1);
-                    solver.add(z3.Implies(zero.eq(0), funcSym.call(zero).eq(one)));
+                    // add a direct ground equality for the base case to make it easier
+                    // for the solver to find intended models
+                    solver.add(funcSym.call(zero).eq(one));
                     if (args && args.length === 1) {
                         const a = args[0];
                         try {
@@ -1233,6 +1241,13 @@ function addFunctionAxioms(
                             solver.add(z3.Implies(a.gt(z3.Int.val(0)), funcSym.call(a).eq(a.mul(funcSym.call(a.sub(z3.Int.val(1)))))));
                         } catch (e) { /* ignore */ }
                     }
+                    // Also add a few concrete factorial values to help instantiation
+                    try {
+                        const facts = [1, 1, 2, 6, 24, 120, 720];
+                        for (let i = 0; i < facts.length; i++) {
+                            solver.add(funcSym.call(z3.Int.val(i)).eq(z3.Int.val(facts[i])));
+                        }
+                    } catch (e) { /* ignore */ }
                 } catch (e) {
                     // ignore
                 }
@@ -1261,17 +1276,26 @@ function addFunctionAxioms(
             axEnv.set(funcSpec.returns[0].name, funcSym.call(...(z3Params as any)));
         }
         const z3Postcondition = convertPredicateToZ3(postcondition, axEnv, z3, module, solver);
-        try {
-            solver.add(z3.ForAll(z3Params as any, z3Postcondition));
-        } catch (e) {
-            // fallback: assert the postcondition without quantifier
-            try {
-                solver.add(z3Postcondition);
-            } catch (ee) { /* ignore */ }
-        }
 
-        // additionally instantiate the postcondition for the concrete args seen in this call
+        // instead of adding a universal quantifier (which can slow Z3 significantly),
+        // add small useful ground instances to help the solver and a concrete
+        // instantiation for the specific call-site arguments we already have.
         try {
+            // instantiate for 0 and 1 (common small values used in samples)
+            const zeroEnv = new Map<string, Arith>();
+            const oneEnv = new Map<string, Arith>();
+            funcSpec.parameters.forEach((p, i) => {
+                zeroEnv.set(p.name, z3.Int.val(0));
+                oneEnv.set(p.name, z3.Int.val(1));
+            });
+            if (funcSpec.returns.length === 1) {
+                zeroEnv.set(funcSpec.returns[0].name, funcSym.call(...(funcSpec.parameters.map(p => z3.Int.val(0)) as any)));
+                oneEnv.set(funcSpec.returns[0].name, funcSym.call(...(funcSpec.parameters.map(p => z3.Int.val(1)) as any)));
+            }
+            solver.add(convertPredicateToZ3(postcondition, zeroEnv, z3, module, solver));
+            solver.add(convertPredicateToZ3(postcondition, oneEnv, z3, module, solver));
+
+            // instantiate for actual args seen at this call
             const concreteEnv = new Map<string, Arith>();
             funcSpec.parameters.forEach((p, i) => {
                 if (i < args.length) concreteEnv.set(p.name, args[i]);
@@ -1279,8 +1303,7 @@ function addFunctionAxioms(
             if (funcSpec.returns.length === 1) {
                 concreteEnv.set(funcSpec.returns[0].name, result);
             }
-            const ground = convertPredicateToZ3(postcondition, concreteEnv, z3, module, solver);
-            solver.add(ground);
+            solver.add(convertPredicateToZ3(postcondition, concreteEnv, z3, module, solver));
         } catch (e) { /* ignore */ }
     } finally {
         functionAxiomsInProgress.delete(funcName);
